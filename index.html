@@ -43,9 +43,9 @@ button:disabled { opacity: .37; cursor: default; }
 .top-actions { justify-self: end; display: flex; align-items: center; gap: 7px; }
 .state { padding: 6px 11px; border: 1px solid #3b5350; border-radius: 4px; color: var(--mint); font-size: 12px; font-weight: 700; white-space: nowrap; }
 .stage { position: relative; min-height: 0; isolation: isolate; overflow: hidden; background: radial-gradient(ellipse at 50% 70%,#182a2b 0,#101d20 49%,#0c161a 85%); }
-#arena, #marks { position: absolute; width: 100%; height: 100%; display: block; }
+#arena, #marks, .scene-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 #arena { touch-action: none; cursor: crosshair; }
-#marks { pointer-events: none; }
+#marks, .scene-canvas { pointer-events: none; }
 .stage-label { position: absolute; top: 13px; left: 22px; pointer-events: none; }
 .stage-label strong { display: block; margin-top: 3px; font-size: 12px; }
 .stats {
@@ -211,6 +211,7 @@ button:disabled { opacity: .37; cursor: default; }
     </div>
   </footer>
 </div>
+<script src="./vendor/three-r187.min.js"></script>
 <script>
 'use strict';
 const byId = id => document.getElementById(id);
@@ -461,7 +462,7 @@ function simulate() {
 }
 
 const overhead = Math.PI / 2;
-const minPitch = 65 * Math.PI / 180;
+const minPitch = 10 * Math.PI / 180;
 const maxZoom = 10;
 const camera = {
   w: 1, h: 1, dpr: 1, scale: 1, centerY: 0, yaw: 0, pitch: overhead, zoom: 1,
@@ -488,7 +489,7 @@ function updateCamera() {
 function turnCamera(dx, dy, zoomFactor = 1, focus = null) {
   const pivot = focus && groundPoint(focus.x, focus.y);
   camera.yaw = (camera.yaw - dx * .012) % (2 * Math.PI);
-  camera.pitch = clamp(camera.pitch + dy * .0035, minPitch, overhead);
+  camera.pitch = clamp(camera.pitch + dy * .007, minPitch, overhead);
   camera.zoom = clamp(camera.zoom * zoomFactor, .65, maxZoom);
   updateCamera();
   if (pivot) {
@@ -656,101 +657,95 @@ document.addEventListener('fullscreenchange', () => {
   ui.fullscreen.setAttribute('aria-pressed', String(fullscreen));
 });
 
-function createWebGLScene(gl) {
-  const program = gl.createProgram();
-  function attach(type, source) {
-    const shader = gl.createShader(type);
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
-    gl.attachShader(program, shader);
-  }
-  attach(gl.VERTEX_SHADER, `
-    attribute vec3 aVertex, aNormal;
-    uniform vec3 uCenter, uSize;
-    uniform vec2 uScale, uTilt, uYaw, uTarget;
-    uniform float uYOffset, uLit, uDepthScale;
-    varying float vLight;
-    void main() {
-      vec3 p = aVertex * uSize + uCenter;
-      p.xz -= uTarget;
-      float right = p.x * uYaw.y - p.z * uYaw.x;
-      float depth = p.x * uYaw.x + p.z * uYaw.y;
-      gl_Position = vec4(right * uScale.x, (p.y * uTilt.y - depth * uTilt.x) * uScale.y + uYOffset,
-                         -(p.y * uTilt.x + depth * uTilt.y) * uDepthScale, 1.0);
-      float shade = .64 + .36 * max(0.0, dot(aNormal, vec3(-.46, .82, -.34)));
-      vLight = mix(1.0, shade, uLit);
-    }
-  `);
-  attach(gl.FRAGMENT_SHADER, `
-    precision mediump float;
-    uniform vec4 uColor;
-    varying float vLight;
-    void main() { gl_FragColor = vec4(uColor.rgb * vLight, uColor.a); }
-  `);
-  gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
-  gl.useProgram(program);
-  const attributes = ['aVertex','aNormal'].map(name => gl.getAttribLocation(program, name));
-  const uniforms = Object.fromEntries(['uCenter', 'uSize', 'uScale', 'uTilt', 'uYaw', 'uTarget', 'uYOffset', 'uLit', 'uDepthScale', 'uColor']
-    .map(name => [name, gl.getUniformLocation(program, name)]));
-  for (const location of attributes) gl.enableVertexAttribArray(location);
-  function mesh(vertices) {
-    const buffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
-    return {buffer, count: vertices.length / 6};
-  }
-  function surface(positions, normal) { return positions.flatMap(vertex => [...vertex, ...normal]); }
-  const planeVertices = [[-.5,0,-.5], [.5,0,-.5], [-.5,0,.5], [-.5,0,.5], [.5,0,-.5], [.5,0,.5]];
-  const plane = mesh(surface(planeVertices, [0,1,0]));
-  const bodyVertices = [];
-  const diskVertices = [];
-  for (let i = 0; i < 28; i++) {
-    const a = i * 2 * Math.PI / 28, b = (i + 1) * 2 * Math.PI / 28;
-    const ax = Math.cos(a), az = Math.sin(a), bx = Math.cos(b), bz = Math.sin(b);
-    const cap = surface([[0,1,0], [ax,1,az], [bx,1,bz]], [0,1,0]);
-    diskVertices.push(...cap);
-    bodyVertices.push(...cap, ...surface(
-      [[ax,0,az], [bx,0,bz], [ax,1,az], [ax,1,az], [bx,0,bz], [bx,1,bz]],
-      [Math.cos((a+b)/2), 0, Math.sin((a+b)/2)]
-    ));
-  }
-  const body = mesh(bodyVertices), disk = mesh(diskVertices);
-  let active = null;
-  function draw(shape, x, y, z, sx, sy, sz, color, lit = 0) {
-    if (active !== shape) {
-      active = shape;
-      gl.bindBuffer(gl.ARRAY_BUFFER, shape.buffer);
-      gl.vertexAttribPointer(attributes[0], 3, gl.FLOAT, false, 24, 0);
-      gl.vertexAttribPointer(attributes[1], 3, gl.FLOAT, false, 24, 12);
-    }
-    gl.uniform3f(uniforms.uCenter, x, y, z);
-    gl.uniform3f(uniforms.uSize, sx, sy, sz);
-    gl.uniform4f(uniforms.uColor, color[0], color[1], color[2], color[3] ?? 1);
-    gl.uniform1f(uniforms.uLit, lit);
-    gl.drawArrays(gl.TRIANGLES, 0, shape.count);
-  }
-  const shapes = {plane, body, disk};
-  gl.enable(gl.DEPTH_TEST);
-  gl.depthFunc(gl.LEQUAL);
-  gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-  return {
-    begin() {
-      gl.viewport(0,0,gl.drawingBufferWidth,gl.drawingBufferHeight);
-      gl.clearColor(0,0,0,0);
-      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-      gl.uniform2f(uniforms.uScale, 2 * camera.scale / camera.w, 2 * camera.scale / camera.h);
-      gl.uniform2f(uniforms.uTilt, camera.sin, camera.cos);
-      gl.uniform2f(uniforms.uYaw, camera.sinYaw, camera.cosYaw);
-      gl.uniform2f(uniforms.uTarget, camera.targetX, camera.targetZ);
-      const depthExtent = 2 * Math.hypot(arena.x + 1, arena.z + 1) * camera.cos + 1;
-      gl.uniform1f(uniforms.uDepthScale, .95 / depthExtent);
-      gl.uniform1f(uniforms.uYOffset, 1 - 2 * camera.centerY / camera.h);
-    },
-    draw(shape, ...args) { draw(shapes[shape], ...args); }
+function syncThreeCamera(view) {
+  const distance = 120;
+  view.position.set(
+    camera.targetX + distance * camera.cos * camera.sinYaw,
+    distance * camera.sin,
+    camera.targetZ + distance * camera.cos * camera.cosYaw
+  );
+  view.up.set(-camera.sinYaw * camera.sin, camera.cos, -camera.cosYaw * camera.sin);
+  view.lookAt(camera.targetX, 0, camera.targetZ);
+  const halfWidth = camera.w / (2 * camera.scale);
+  const halfHeight = camera.h / (2 * camera.scale);
+  const yOffset = (camera.centerY - camera.h / 2) / camera.scale;
+  view.left = -halfWidth;
+  view.right = halfWidth;
+  view.top = halfHeight + yOffset;
+  view.bottom = -halfHeight + yOffset;
+  view.updateProjectionMatrix();
+}
+
+function createThreeScene(three, context) {
+  const renderer = new three.WebGLRenderer({canvas: context.canvas, context, alpha: true, antialias: true});
+  renderer.setClearColor(0x000000, 0);
+  const scene = new three.Scene();
+  const view = new three.OrthographicCamera(-1, 1, 1, -1, .1, 260);
+  scene.add(new three.AmbientLight(0xffffff, .9));
+  const sunlight = new three.DirectionalLight(0xffffff, 1.15);
+  sunlight.position.set(-.46, .82, -.34);
+  scene.add(sunlight);
+
+  const geometries = {
+    plane: new three.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
+    body: new three.CylinderGeometry(1, 1, 1, 28).translate(0, .5, 0),
+    disk: new three.CircleGeometry(1, 28).rotateX(-Math.PI / 2)
   };
+  // Reuse the same meshes and materials as primitives move between frames.
+  const pools = new Map();
+  return {
+    resize() { renderer.setDrawingBufferSize(camera.w, camera.h, camera.dpr); },
+    begin() { for (const pool of pools.values()) pool.used = 0; },
+    draw(shape, x, y, z, sx, sy, sz, color, lit = 0) {
+      const opacity = color[3] ?? 1;
+      const transparent = opacity < 1;
+      const key = shape + ':' + lit + ':' + transparent;
+      if (!pools.has(key)) pools.set(key, {used: 0, meshes: []});
+      const pool = pools.get(key);
+      let mesh = pool.meshes[pool.used++];
+      if (!mesh) {
+        const Material = lit ? three.MeshLambertMaterial : three.MeshBasicMaterial;
+        mesh = new three.Mesh(geometries[shape], new Material({transparent, depthWrite: !transparent}));
+        pool.meshes.push(mesh);
+        scene.add(mesh);
+      }
+      mesh.visible = true;
+      mesh.position.set(x, y, z);
+      mesh.scale.set(sx, shape === 'disk' ? 1 : sy, sz);
+      mesh.material.color.setRGB(color[0], color[1], color[2], three.SRGBColorSpace);
+      mesh.material.opacity = opacity;
+    },
+    end() {
+      for (const pool of pools.values()) {
+        for (let i = pool.used; i < pool.meshes.length; i++) pool.meshes[i].visible = false;
+      }
+      syncThreeCamera(view);
+      renderer.render(scene, view);
+    }
+  };
+}
+
+function createGraphicsScene() {
+  const three = globalThis.THREE;
+  if (three) {
+    // Keep the input canvas available for the Canvas fallback.
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('webgl2', {alpha: true, antialias: true});
+    if (context) {
+      try {
+        const scene = createThreeScene(three, context);
+        canvas.className = 'scene-canvas';
+        canvas.setAttribute('aria-hidden', 'true');
+        ui.arena.before(canvas);
+        return scene;
+      } catch (error) {
+        console.warn('Three.js initialization failed. Switching to Canvas.', error);
+      }
+    }
+  }
+  const fallback = ui.arena.getContext('2d');
+  if (!fallback) throw new Error('No graphics context is available.');
+  return createCanvasScene(fallback);
 }
 
 function createCanvasScene(ctx) {
@@ -759,6 +754,10 @@ function createCanvasScene(ctx) {
     return 'rgba(' + [r, g, b].map(channel => Math.round(channel * shade * 255)).join(',') + ',' + a + ')';
   }
   return {
+    resize() {
+      ctx.canvas.width = Math.round(camera.w * camera.dpr);
+      ctx.canvas.height = Math.round(camera.h * camera.dpr);
+    },
     begin() {
       ctx.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
       ctx.clearRect(0, 0, camera.w, camera.h);
@@ -846,6 +845,7 @@ function createRenderer(scene) {
       const byDepth = (a, b) => (a.x - b.x) * camera.sinYaw + (a.z - b.z) * camera.cosYaw;
       for (const model of [...units].sort(byDepth)) unit(model);
       for (const model of [...preview].sort(byDepth)) unit(model,true,valid);
+      scene.end?.();
     }
   };
 }
@@ -900,10 +900,8 @@ function drawMarks(ctx, units, preview, valid) {
 }
 
 function boot() {
-  const gl = ui.arena.getContext('webgl', {antialias: true, alpha: true, premultipliedAlpha: false});
-  const fallback = gl ? null : ui.arena.getContext('2d');
-  if (!gl && !fallback) throw new Error('No graphics context is available.');
-  const renderer = createRenderer(gl ? createWebGLScene(gl) : createCanvasScene(fallback));
+  const scene = createGraphicsScene();
+  const renderer = createRenderer(scene);
   const marks = ui.marks.getContext('2d');
   function resize() {
     needsPaint = true;
@@ -912,10 +910,9 @@ function boot() {
     camera.h = Math.max(height, 1);
     camera.dpr = Math.min(devicePixelRatio || 1, 2);
     updateCamera();
-    for (const canvas of [ui.arena, ui.marks]) {
-      canvas.width = Math.round(camera.w * camera.dpr);
-      canvas.height = Math.round(camera.h * camera.dpr);
-    }
+    scene.resize();
+    ui.marks.width = Math.round(camera.w * camera.dpr);
+    ui.marks.height = Math.round(camera.h * camera.dpr);
   }
   new ResizeObserver(resize).observe(ui.arena);
   resize();
