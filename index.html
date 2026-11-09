@@ -60,7 +60,7 @@ button:disabled { opacity: .37; cursor: default; }
   box-shadow: 0 4px 14px #03090c70; pointer-events: auto;
 }
 .unit-picker { display: flex; gap: 4px; }
-.unit-picker .btn { flex: 1; }
+.unit-picker .btn { flex: 1; padding-inline: 4px; }
 .unit-picker .btn[aria-pressed="true"] { color: var(--mint); border-color: #76c8b5; background: #223a38; }
 .field { display: grid; gap: 4px; }
 .field-name { color: #bfceca; font-size: 11px; white-space: nowrap; }
@@ -135,6 +135,7 @@ button:disabled { opacity: .37; cursor: default; }
       <div class="unit-picker" role="group" aria-label="배치할 유닛">
         <button class="btn" id="unit-circle" type="button" aria-pressed="true">● 원</button>
         <button class="btn" id="unit-triangle" type="button" aria-pressed="false">▲ 삼각형</button>
+        <button class="btn" id="unit-square" type="button" aria-pressed="false">■ 사각형</button>
       </div>
       <div class="field">
         <label class="field-name" for="count">대형 인원</label>
@@ -171,7 +172,7 @@ button:disabled { opacity: .37; cursor: default; }
 'use strict';
 const byId = id => document.getElementById(id);
 const ui = Object.fromEntries([
-  'arena', 'marks', 'hint', 'unit-circle', 'unit-triangle',
+  'arena', 'marks', 'hint', 'unit-circle', 'unit-triangle', 'unit-square',
   'count', 'count-down', 'count-up', 'rows', 'rows-down', 'rows-up', 'undo', 'place',
   'start', 'deploy-bar', 'battle-bar', 'back', 'clock', 'result', 'verdict', 'summary', 'error',
   'zoom-out', 'zoom-in', 'view-reset', 'fullscreen', 'screen-notice'
@@ -181,7 +182,9 @@ const circle = Object.freeze({ hp: 200, damage: 75, defense: .10, penetration: 0
 const triangle = Object.freeze({ hp: 120, damage: 100, defense: 0, penetration: .10,
   radius: circle.radius, moveSpeed: circle.moveSpeed, attackGap: 1.2, attackRange: 10,
   projectileSpeed: circle.moveSpeed * 2 });
-const unitTypes = Object.freeze({circle, triangle});
+const square = Object.freeze({ hp: 250, damage: 50, defense: .35, penetration: 0,
+  radius: circle.radius, moveSpeed: 2.98, attackGap: .85, attackRange: circle.attackRange });
+const unitTypes = Object.freeze({circle, triangle, square});
 const projectileRadius = .16;
 const arena = { x: 35, z: 35 };
 const spacing = 1.5;
@@ -724,7 +727,9 @@ function createThreeScene(three, context) {
     body: new three.CylinderGeometry(1, 1, 1, 28).translate(0, .5, 0),
     disk: new three.CircleGeometry(1, 28).rotateX(-Math.PI / 2),
     triangle: new three.CylinderGeometry(1, 1, 1, 3).translate(0, .5, 0),
-    'triangle-cap': new three.CircleGeometry(1, 3, -Math.PI / 2).rotateX(-Math.PI / 2)
+    'triangle-cap': new three.CircleGeometry(1, 3, -Math.PI / 2).rotateX(-Math.PI / 2),
+    square: new three.CylinderGeometry(1, 1, 1, 4, 1, false, Math.PI / 4).translate(0, .5, 0),
+    'square-cap': new three.CircleGeometry(1, 4, -Math.PI / 4).rotateX(-Math.PI / 2)
   };
   // Reuse the same meshes and materials as primitives move between frames.
   const pools = new Map();
@@ -816,13 +821,16 @@ function createCanvasScene(ctx) {
         ctx.fill();
         return;
       }
-      if (shape === 'triangle' || shape === 'triangle-cap') {
-        const corners = Array.from({length: 3}, (_, i) => {
-          const angle = heading + i * 2 * Math.PI / 3;
+      const isSquare = shape === 'square' || shape === 'square-cap';
+      if (isSquare || shape === 'triangle' || shape === 'triangle-cap') {
+        const sides = isSquare ? 4 : 3;
+        const firstCorner = heading + (isSquare ? Math.PI / 4 : 0);
+        const corners = Array.from({length: sides}, (_, i) => {
+          const angle = firstCorner + i * 2 * Math.PI / sides;
           return {x: x + sx * Math.sin(angle), z: z + sz * Math.cos(angle)};
         });
         const tops = corners.map(p => project(p.x, y + sy, p.z));
-        if (shape === 'triangle') {
+        if (shape === 'triangle' || shape === 'square') {
           ctx.fillStyle = rgba(color, lit ? .74 : .85);
           for (let i = 0; i < corners.length; i++) {
             const j = (i + 1) % corners.length;
@@ -883,10 +891,10 @@ function createRenderer(scene) {
     const life = model.hp === 0 ? model.fade / .23 : 1;
     if (life <= 0) return;
     const color = teams[model.team];
-    const radius = unitTypes[model.type].radius * (model.hp === 0 ? .55 + .45 * life : 1);
-    const isTriangle = model.type === 'triangle';
-    const body = isTriangle ? 'triangle' : 'body';
-    const capShape = isTriangle ? 'triangle-cap' : 'disk';
+    const cornerScale = model.type === 'square' ? Math.SQRT2 : 1;
+    const radius = unitTypes[model.type].radius * cornerScale * (model.hp === 0 ? .55 + .45 * life : 1);
+    const body = model.type === 'circle' ? 'body' : model.type;
+    const capShape = model.type === 'circle' ? 'disk' : model.type + '-cap';
     const heading = model.heading ?? (model.team === 0 ? Math.PI : 0);
     const swing = Math.sin((model.swing || 0) / .16 * Math.PI) * .17;
     const x = model.x + (model.aimX || 0) * swing;
@@ -920,12 +928,12 @@ function createRenderer(scene) {
   };
 }
 
-function triangleMark(ctx, model, y, radius) {
+function polygonMark(ctx, model, y, radius, sides) {
   const point = project(model.x, y, model.z);
   const heading = (model.heading ?? (model.team === 0 ? Math.PI : 0)) - camera.yaw;
-  const angle = Math.atan2(camera.sin * Math.cos(heading), Math.sin(heading));
-  fillPolygon(ctx, Array.from({length: 3}, (_, i) => {
-    const vertex = angle + i * 2 * Math.PI / 3;
+  const angle = Math.atan2(camera.sin * Math.cos(heading), Math.sin(heading)) + (sides === 4 ? Math.PI / 4 : 0);
+  fillPolygon(ctx, Array.from({length: sides}, (_, i) => {
+    const vertex = angle + i * 2 * Math.PI / sides;
     return {x: point.x + radius * Math.cos(vertex), y: point.y + radius * Math.sin(vertex)};
   }));
 }
@@ -942,7 +950,8 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
         if (model.hp === 0) continue;
         const point = project(model.x, .4, model.z);
         ctx.fillStyle = isPreview && !valid ? '#f6d393' : model.team === 1 ? '#ffab97' : '#8cebd6';
-        if (model.type === 'triangle') triangleMark(ctx, model, .4, radius + .35);
+        if (model.type === 'triangle') polygonMark(ctx, model, .4, radius + .35, 3);
+        else if (model.type === 'square') polygonMark(ctx, model, .4, radius * Math.SQRT2, 4);
         else {
           ctx.beginPath();
           ctx.arc(point.x, point.y, radius, 0, 2 * Math.PI);
@@ -955,7 +964,7 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
   if (projectileRadius * camera.scale < 1.35) {
     for (const shot of projectiles) {
       ctx.fillStyle = shot.team === 0 ? '#abffed' : '#ffd1bf';
-      triangleMark(ctx, shot, .40, 1.35);
+      polygonMark(ctx, shot, .40, 1.35, 3);
     }
   }
   if (state.phase === 'deploy') {
