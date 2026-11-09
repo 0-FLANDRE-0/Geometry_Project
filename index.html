@@ -1,0 +1,897 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0d171a">
+<title>Geometry Project · Arena 01</title>
+<style>
+:root {
+  color-scheme: dark;
+  --ink: #ecf5f2;
+  --muted: #a0b3af;
+  --mint: #8cebd6;
+  --coral: #ffab97;
+  --line: #28383a;
+  --surface: #101d20;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: #0c1518; color: var(--ink); font: 14px system-ui, sans-serif; }
+button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+button:focus-visible, canvas:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+button:disabled { opacity: .37; cursor: default; }
+[hidden] { display: none !important; }
+#app {
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100vh; height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+#app:fullscreen { width: 100%; height: 100%; background: #0c1518; }
+.top {
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px;
+  min-height: 66px; padding: 9px 22px; background: #0d171a; border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.emblem { width: 30px; height: 30px; flex: none; }
+.brand strong { display: block; font-size: clamp(12px, 2vw, 18px); letter-spacing: -.04em; white-space: nowrap; }
+.kicker { color: var(--muted); font: 700 9px ui-monospace, monospace; letter-spacing: .14em; }
+.score { display: flex; align-items: center; gap: clamp(10px, 2.6vw, 28px); font-variant-numeric: tabular-nums; }
+.score-side { display: flex; align-items: center; gap: 7px; font-size: 12px; white-space: nowrap; }
+.score-side b { font: 700 clamp(18px, 3.4vw, 28px) ui-monospace, monospace; }
+.allies { color: var(--mint); }
+.enemies { color: var(--coral); }
+.divider { color: #738680; font: 700 9px ui-monospace, monospace; }
+.top-actions { justify-self: end; display: flex; align-items: center; gap: 7px; }
+.state { padding: 6px 11px; border: 1px solid #3b5350; border-radius: 4px; color: var(--mint); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.stage { position: relative; min-height: 0; isolation: isolate; overflow: hidden; background: radial-gradient(ellipse at 50% 70%,#182a2b 0,#101d20 49%,#0c161a 85%); }
+#arena, #marks { position: absolute; width: 100%; height: 100%; display: block; }
+#arena { touch-action: none; cursor: crosshair; }
+#marks { pointer-events: none; }
+.stage-label { position: absolute; top: 13px; left: 22px; pointer-events: none; }
+.stage-label strong { display: block; margin-top: 3px; font-size: 12px; }
+.stats {
+  position: absolute; top: 13px; right: 22px; display: flex; gap: 9px; align-items: center;
+  padding: 5px 8px; border: 1px solid #314340; border-radius: 5px; background: #101d20e8;
+  color: var(--muted); font: 10px system-ui,sans-serif; pointer-events: none;
+}
+.stats b { color: var(--ink); font: 700 10px ui-monospace,monospace; }
+.view-tools { position: absolute; z-index: 1; right: 10px; bottom: 10px; display: grid; gap: 5px; width: 91px; }
+.view-tools .btn { background: #101d20ee; padding: 0 6px; }
+.view-tools .btn[aria-pressed="true"] { color: var(--mint); border-color: #76c8b5; }
+.zoom-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+.zoom-tools .btn { font-size: 20px; }
+#arena[data-orbit="true"] { cursor: grab; }
+#arena[data-orbit="true"]:active { cursor: grabbing; }
+.screen-notice {
+  position: absolute; z-index: 2; top: 46px; right: 10px; max-width: min(295px, 80vw);
+  padding: 8px 10px; color: var(--coral); background: #101d20f5; border: 1px solid #704b42;
+  border-radius: 5px; font-size: 11px;
+}
+.circle-icon { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--mint); }
+.controls { background: var(--surface); border-top: 1px solid #314245; padding: 8px 22px 11px; }
+.hint { color: var(--muted); min-height: 17px; margin-bottom: 7px; font-size: 11px; line-height: 17px; }
+.hint[data-error="true"] { color: var(--coral); }
+.bar { display: flex; align-items: end; gap: 9px; }
+.field { display: grid; gap: 4px; }
+.field-name { color: var(--muted); font-size: 11px; line-height: 12px; }
+.field-name b { color: var(--mint); font-weight: 600; }
+.stepper { display: flex; align-items: center; height: 43px; background: #0d171a; border: 1px solid #334647; border-radius: 6px; }
+.stepper button { width: 42px; height: 41px; border: 0; border-radius: 5px; background: transparent; font-size: 21px; }
+.stepper button:active:not(:disabled), .btn:active:not(:disabled) { filter: brightness(.84); }
+.stepper output { min-width: 24px; text-align: center; font: 700 15px ui-monospace,monospace; color: var(--mint); }
+.actions { display: flex; align-items: center; gap: 7px; margin-left: auto; }
+.btn { min-height: 43px; padding: 0 13px; border-radius: 6px; border: 1px solid #3d5252; background: #1b2b2e; font-weight: 700; font-size: 12px; white-space: nowrap; }
+.place { background: var(--mint); border-color: var(--mint); color: #082921; }
+.launch { background: #223a38; border-color: #54837a; color: #b9f5e7; }
+#battle-bar { min-height: 59px; align-items: center; }
+.battle-readout { display: flex; align-items: center; gap: 13px; min-height: 43px; }
+.clock { font: 700 23px ui-monospace,monospace; }
+.overlay {
+  position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none;
+  background: #09141766;
+}
+.result-card {
+  padding: 15px 30px 18px; text-align: center; background: #101d20f0; border: 1px solid #58726e;
+  border-radius: 9px; box-shadow: 0 8px 35px #03090c9c;
+}
+.result-card h1 { font-size: clamp(24px, 5vw, 43px); letter-spacing: -.055em; margin: 3px 0 4px; }
+.result-card p { margin: 0; color: var(--muted); font-size: 12px; }
+.error-card { color: var(--coral); pointer-events: auto; }
+.rotate { display: none; }
+@media (max-height: 470px) {
+  .top { min-height: 48px; padding-top: 5px; padding-bottom: 5px; }
+  .controls { padding-top: 4px; padding-bottom: 6px; }
+  .hint { margin-bottom: 3px; }
+  .stage-label, .stats { top: 8px; }
+}
+@media (max-width: 720px) {
+  .top, .controls { padding-left: 10px; padding-right: 10px; }
+  .stage-label { left: 10px; }
+  .stats { right: 10px; }
+  .bar { gap: 6px; }
+  .actions { gap: 5px; }
+  .btn { padding: 0 9px; }
+  .brand { gap: 7px; }
+  .emblem { width: 24px; height: 24px; }
+}
+@media (orientation: portrait) and (max-width: 570px) {
+  .top { gap: 6px; }
+  .top-actions .state { display: none; }
+  .bar { flex-wrap: wrap; gap: 7px; }
+  .view-tools { display: flex; width: auto; }
+  .zoom-tools .btn { min-width: 42px; }
+  .actions { width: 100%; margin: 0; }
+  .actions .btn { flex: 1; }
+  .rotate { display: inline; }
+  .stage-label { display: none; }
+  .stats { left: 10px; right: auto; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div class="brand">
+      <svg class="emblem" aria-hidden="true" viewBox="0 0 32 32">
+        <path d="M16 2 30 9.5v13L16 30 2 22.5v-13Z" fill="none" stroke="#8cebd6" stroke-width="1.5"/>
+        <circle cx="16" cy="16" r="6.4" fill="none" stroke="#8cebd6" stroke-width="1.5"/>
+        <circle cx="16" cy="16" r="2" fill="#8cebd6"/>
+      </svg>
+      <div><strong>Geometry Project</strong><div class="kicker">PROTOTYPE 01</div></div>
+    </div>
+    <div class="score" aria-label="진영별 유닛 수">
+      <span class="score-side allies">아군 <b id="friendly-count">00</b></span>
+      <span class="divider">VS</span>
+      <span class="score-side enemies">적 <b id="enemy-count">10</b></span>
+    </div>
+    <div class="top-actions">
+      <span class="state" id="phase" aria-live="polite">배치 단계</span>
+      <button class="btn" id="fullscreen" type="button" aria-pressed="false">전체화면</button>
+    </div>
+  </header>
+  <main class="stage" aria-label="훈련장">
+    <canvas id="arena" tabindex="0" aria-label="3D 전장. 한 손가락으로 대형 이동, 두 손가락으로 카메라 회전과 확대."></canvas>
+    <canvas id="marks" aria-hidden="true"></canvas>
+    <div class="stage-label"><div class="kicker">ARENA 01</div><strong>평면 훈련장</strong></div>
+    <div class="stats" aria-label="원 유닛, 근거리, 체력 200, 공격력 75, 방어율 10%, 방어관통률 0%">
+      <span class="circle-icon" aria-hidden="true"></span><b>원 · 근거리</b><span>체력 <b>200</b></span><span>공격 <b>75</b></span><span>방어 <b>10%</b></span>
+    </div>
+    <div class="view-tools" role="group" aria-label="카메라 조작">
+      <button class="btn" id="view-mode" type="button" aria-pressed="false">회전 모드</button>
+      <div class="zoom-tools">
+        <button class="btn" id="zoom-out" type="button" aria-label="시점 축소">−</button>
+        <button class="btn" id="zoom-in" type="button" aria-label="시점 확대">+</button>
+      </div>
+      <button class="btn" id="view-reset" type="button">시점 초기화</button>
+    </div>
+    <div class="screen-notice" id="screen-notice" role="status" hidden></div>
+    <div id="result" class="overlay" hidden>
+      <div class="result-card" role="status">
+        <div class="kicker">BATTLE COMPLETE</div>
+        <h1 id="verdict"></h1>
+        <p id="summary"></p>
+      </div>
+    </div>
+    <div id="error" class="overlay" hidden>
+      <div class="result-card error-card">이 브라우저에서 전장 화면을 열 수 없어.</div>
+    </div>
+  </main>
+  <footer class="controls">
+    <div class="hint" id="hint" aria-live="polite"></div>
+    <div class="bar" id="deploy-bar">
+      <div class="field">
+        <div class="field-name">대형 인원 <b id="remaining"></b></div>
+        <div class="stepper">
+          <button id="count-down" aria-label="대형 인원 줄이기">−</button>
+          <output id="count">10</output>
+          <button id="count-up" aria-label="대형 인원 늘리기">+</button>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-name">줄 수 <span class="rotate">· 가로 화면 권장</span></div>
+        <div class="stepper">
+          <button id="rows-down" aria-label="줄 수 줄이기">−</button>
+          <output id="rows">2</output>
+          <button id="rows-up" aria-label="줄 수 늘리기">+</button>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="undo">되돌리기</button>
+        <button class="btn place" id="place">이 위치에 배치</button>
+        <button class="btn launch" id="start">전투 시작</button>
+      </div>
+    </div>
+    <div class="bar" id="battle-bar" hidden>
+      <div class="battle-readout"><span class="kicker">전투 시간</span><output id="clock" class="clock">00.0</output></div>
+      <div class="actions">
+        <button class="btn launch" id="back">다시 배치</button>
+      </div>
+    </div>
+  </footer>
+</div>
+<script>
+'use strict';
+const byId = id => document.getElementById(id);
+const ui = Object.fromEntries([
+  'arena', 'marks', 'friendly-count', 'enemy-count', 'phase', 'hint', 'remaining',
+  'count', 'count-down', 'count-up', 'rows', 'rows-down', 'rows-up', 'undo', 'place',
+  'start', 'deploy-bar', 'battle-bar', 'back', 'clock', 'result', 'verdict', 'summary', 'error',
+  'view-mode', 'zoom-out', 'zoom-in', 'view-reset', 'fullscreen', 'screen-notice'
+].map(id => [id, byId(id)]));
+const circle = Object.freeze({ hp: 200, damage: 75, defense: .10, penetration: 0,
+  radius: .72, moveSpeed: 4.4, attackGap: .82, reach: .09 });
+const arena = { x: 23, z: 15 };
+const capacity = 10;
+const spacing = 2.12;
+const enemyLine = Array.from({length: 10}, (_, i) => ({x: (i - 4.5) * 3.1, z: 0, team: 1}));
+const deploy = {count: 10, rows: 2, anchor: {x: 0, z: 8}, groups: []};
+const state = {phase: 'deploy', elapsed: 0, clockTenths: -1, units: [], alive: [0, 10]};
+const clamp = (n, lo, hi) => Math.max(lo, Math.min(n, hi));
+const distance2 = (a, b) => (a.x - b.x) ** 2 + (a.z - b.z) ** 2;
+let needsPaint = true;
+let orbitMode = false;
+const deployedCount = () => deploy.groups.reduce((total, group) => total + group.length, 0);
+
+function formation() {
+  const units = [];
+  for (let row = 0; row < deploy.rows; row++) {
+    const cols = Math.floor(deploy.count / deploy.rows) + Number(row < deploy.count % deploy.rows);
+    for (let col = 0; col < cols; col++) {
+      units.push({
+        x: deploy.anchor.x + (col - (cols - 1) / 2) * spacing,
+        z: deploy.anchor.z + (row - (deploy.rows - 1) / 2) * spacing,
+        team: 0
+      });
+    }
+  }
+  return units;
+}
+function placementError(units) {
+  if (!units.length) return '';
+  const radius = circle.radius;
+  if (units.some(u => Math.abs(u.x) + radius > arena.x || u.z - radius < 0 || u.z + radius > arena.z)) {
+    return '대형 전체를 민트색 아군 배치 구역 안에 놓아줘.';
+  }
+  const blockers = [...enemyLine, ...deploy.groups.flat()];
+  if (units.some(u => blockers.some(v => distance2(u, v) < (radius * 2 + .14) ** 2))) {
+    return '기존 유닛과 너무 가까워. 대형을 조금 옮겨줘.';
+  }
+  return '';
+}
+function syncCounts() {
+  ui['friendly-count'].textContent = String(state.phase === 'deploy' ? deployedCount() : state.alive[0]).padStart(2, '0');
+  ui['enemy-count'].textContent = String(state.alive[1]).padStart(2, '0');
+}
+function updateDeploy() {
+  needsPaint = true;
+  const remaining = capacity - deployedCount();
+  const error = placementError(formation());
+  ui.remaining.textContent = '· 남은 ' + remaining;
+  ui.count.textContent = deploy.count;
+  ui.rows.textContent = deploy.rows;
+  ui['count-down'].disabled = deploy.count <= 1;
+  ui['count-up'].disabled = deploy.count >= remaining;
+  ui['rows-down'].disabled = deploy.rows <= 1;
+  ui['rows-up'].disabled = deploy.rows >= deploy.count;
+  ui.place.disabled = !deploy.count || Boolean(error);
+  ui.undo.disabled = !deploy.groups.length;
+  ui.start.disabled = remaining === capacity;
+  const text = orbitMode
+    ? '한 손가락으로 회전. 회전 모드를 끄면 대형을 다시 옮길 수 있어.'
+    : error || (remaining
+      ? '한 손가락으로 대형 이동 · 두 손가락으로 시점 회전과 확대'
+      : '원 10기 배치 완료. 전투를 시작하거나 마지막 대형을 되돌릴 수 있어.');
+  if (ui.hint.textContent !== text) ui.hint.textContent = text;
+  ui.hint.dataset.error = Boolean(error);
+  syncCounts();
+}
+function updatePhase() {
+  needsPaint = true;
+  ui.phase.textContent = {deploy: '배치 단계', battle: '교전 중', result: '전투 종료'}[state.phase];
+  ui['deploy-bar'].hidden = state.phase !== 'deploy';
+  ui['battle-bar'].hidden = state.phase === 'deploy';
+  ui.result.hidden = state.phase !== 'result';
+  ui['view-mode'].hidden = state.phase !== 'deploy';
+  ui.arena.dataset.orbit = orbitMode || state.phase !== 'deploy';
+  if (state.phase === 'deploy') updateDeploy();
+  else {
+    ui.hint.dataset.error = false;
+    ui.hint.textContent = state.phase === 'battle'
+      ? '전장을 끌면 회전 · 두 손가락을 벌리거나 모으면 확대·축소'
+      : '다시 배치를 누르면 방금 놓았던 대형으로 돌아가.';
+    syncCounts();
+  }
+}
+for (const [id, change] of [
+  ['count-down', () => { deploy.count--; deploy.rows = Math.min(deploy.rows, deploy.count); }],
+  ['count-up', () => { deploy.count++; if (!deploy.rows) deploy.rows = 1; }],
+  ['rows-down', () => { deploy.rows--; }],
+  ['rows-up', () => { deploy.rows++; }]
+]) {
+  ui[id].addEventListener('click', () => { change(); updateDeploy(); });
+}
+ui.place.addEventListener('click', () => {
+  const units = formation();
+  if (state.phase !== 'deploy' || !units.length || units.length + deployedCount() > capacity || placementError(units)) return;
+  deploy.groups.push(units);
+  deploy.count = Math.min(deploy.count, capacity - deployedCount());
+  deploy.rows = Math.min(deploy.rows, deploy.count);
+  updateDeploy();
+});
+ui.undo.addEventListener('click', () => {
+  if (!deploy.groups.length) return;
+  const group = deploy.groups.pop();
+  const restoredRows = new Set(group.map(u => u.z)).size;
+  deploy.count = group.length;
+  deploy.rows = restoredRows;
+  deploy.anchor = {
+    x: (Math.min(...group.map(u => u.x)) + Math.max(...group.map(u => u.x))) / 2,
+    z: (Math.min(...group.map(u => u.z)) + Math.max(...group.map(u => u.z))) / 2
+  };
+  updateDeploy();
+});
+ui.start.addEventListener('click', () => {
+  const allies = deploy.groups.flat();
+  if (!allies.length || state.phase !== 'deploy') return;
+  state.units = [...allies, ...enemyLine].map((unit, id) => ({
+    ...unit, id, hp: circle.hp, cooldown: 0, hurt: 0, swing: 0, fade: 0, vx: 0, vz: 0, aimX: 0, aimZ: 0
+  }));
+  state.phase = 'battle';
+  state.elapsed = 0;
+  state.clockTenths = -1;
+  state.alive = [allies.length, enemyLine.length];
+  ui.clock.textContent = '00.0';
+  updatePhase();
+});
+ui.back.addEventListener('click', () => {
+  orbitMode = false;
+  ui['view-mode'].setAttribute('aria-pressed', 'false');
+  state.phase = 'deploy';
+  state.alive = [0, enemyLine.length];
+  updatePhase();
+});
+
+const contact = circle.radius * 2;
+const attackDistance2 = (contact + circle.reach) ** 2;
+const tick = 1 / 60;
+const hitDamage = circle.damage * (1 - circle.defense * (1 - circle.penetration));
+function closestEnemy(unit, living) {
+  let best = null, range2 = Infinity;
+  for (const target of living) {
+    if (target.team === unit.team) continue;
+    const d2 = distance2(unit, target);
+    if (d2 < range2 - 1e-8) { best = target; range2 = d2; }
+  }
+  return {target: best, range2};
+}
+function moveUnits(living) {
+  for (const unit of living) {
+    unit.vx = unit.vz = 0;
+    const {target, range2} = closestEnemy(unit, living);
+    if (!target || range2 <= attackDistance2) continue;
+    const range = Math.sqrt(range2);
+    let dx = (target.x - unit.x) / range;
+    let dz = (target.z - unit.z) / range;
+    let forward = 2.05, side = 0;
+    for (const other of living) {
+      if (other.team !== unit.team || unit === other) continue;
+      const rx = other.x - unit.x, rz = other.z - unit.z;
+      const along = rx * dx + rz * dz;
+      const lateral = -rx * dz + rz * dx;
+      if (along > .05 && along < forward && Math.abs(lateral) < contact * .88) {
+        forward = along;
+        side = Math.abs(lateral) > .025 ? -Math.sign(lateral) : (unit.id % 2 ? 1 : -1);
+      }
+    }
+    if (side) [dx, dz] = [dx - dz * side * .82, dz + dx * side * .82];
+    const step = Math.min(circle.moveSpeed * tick, range - contact) / Math.hypot(dx, dz);
+    unit.vx = dx * step;
+    unit.vz = dz * step;
+  }
+  for (const unit of living) { unit.x += unit.vx; unit.z += unit.vz; }
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 0; i < living.length; i++) {
+      const a = living[i];
+      for (let j = i + 1; j < living.length; j++) {
+        const b = living[j];
+        const dx = b.x - a.x, dz = b.z - a.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 >= contact * contact) continue;
+        const distance = Math.sqrt(d2);
+        const amount = (contact - distance) * .5;
+        const sx = distance > 1e-8 ? dx / distance * amount : amount;
+        const sz = distance > 1e-8 ? dz / distance * amount : 0;
+        a.x -= sx; a.z -= sz; b.x += sx; b.z += sz;
+      }
+    }
+    for (const u of living) {
+      u.x = clamp(u.x, -arena.x + circle.radius, arena.x - circle.radius);
+      u.z = clamp(u.z, -arena.z + circle.radius, arena.z - circle.radius);
+    }
+  }
+}
+function simulate() {
+  state.elapsed += tick;
+  const living = state.units.filter(unit => unit.hp > 0);
+  moveUnits(living);
+  const damage = new Float32Array(state.units.length);
+  for (const unit of living) {
+    unit.cooldown = Math.max(0, unit.cooldown - tick);
+    if (unit.cooldown > 1e-8) continue;
+    const {target, range2} = closestEnemy(unit, living);
+    if (!target || range2 > attackDistance2) continue;
+    const distance = Math.max(Math.sqrt(range2), .001);
+    unit.aimX = (target.x - unit.x) / distance;
+    unit.aimZ = (target.z - unit.z) / distance;
+    unit.swing = .16;
+    unit.cooldown = circle.attackGap;
+    damage[target.id] += hitDamage;
+  }
+  let casualties = false;
+  for (const unit of living) {
+    if (!damage[unit.id]) continue;
+    unit.hp = Math.max(0, unit.hp - damage[unit.id]);
+    unit.hurt = .18;
+    if (unit.hp === 0) {
+      unit.fade = .23;
+      state.alive[unit.team]--;
+      casualties = true;
+    }
+  }
+  if (casualties) syncCounts();
+  const tenths = Math.floor(state.elapsed * 10);
+  if (tenths !== state.clockTenths) {
+    state.clockTenths = tenths;
+    ui.clock.textContent = (tenths / 10).toFixed(1).padStart(4, '0');
+  }
+  const [allies, enemies] = state.alive;
+  if (allies && enemies) return;
+  state.phase = 'result';
+  ui.verdict.textContent = allies ? '아군 승리' : enemies ? '적군 승리' : '무승부';
+  ui.summary.textContent = '아군 ' + allies + '기 · 적 ' + enemies + '기 생존 · ' + ui.clock.textContent + '초';
+  updatePhase();
+}
+
+const camera = {
+  w: 1, h: 1, dpr: 1, scale: 1, centerY: 0, yaw: 0, pitchOffset: 0, zoom: 1,
+  sinYaw: 0, cosYaw: 1, sin: .74, cos: Math.sqrt(1 - .74 ** 2)
+};
+function basePitch() {
+  return Math.asin(camera.h < 300 && camera.w > camera.h ? .56 : .74);
+}
+function updateCamera() {
+  const pitch = basePitch() + camera.pitchOffset;
+  camera.sin = Math.sin(pitch);
+  camera.cos = Math.cos(pitch);
+  camera.sinYaw = Math.sin(camera.yaw);
+  camera.cosYaw = Math.cos(camera.yaw);
+  camera.centerY = camera.h / 2 + 2;
+  const c = Math.abs(camera.cosYaw), s = Math.abs(camera.sinYaw);
+  const boardWidth = 48 * c + 32 * s;
+  const boardDepth = 48 * s + 30 * c;
+  const gutter = camera.w >= 575 ? 178 : 24;
+  const fit = Math.min((camera.w - gutter) / boardWidth, (camera.h - 18) / (boardDepth * camera.sin + 3.9));
+  camera.scale = Math.max(.01, fit) * camera.zoom;
+  ui['zoom-out'].disabled = camera.zoom <= .65;
+  ui['zoom-in'].disabled = camera.zoom >= 3.2;
+  needsPaint = true;
+}
+function turnCamera(dx, dy, zoomFactor = 1) {
+  camera.yaw = (camera.yaw - dx * .012) % (2 * Math.PI);
+  const base = basePitch();
+  camera.pitchOffset = clamp(base + camera.pitchOffset + dy * .007, .35, 1.41) - base;
+  camera.zoom = clamp(camera.zoom * zoomFactor, .65, 3.2);
+  updateCamera();
+}
+function project(x, y, z) {
+  const right = x * camera.cosYaw - z * camera.sinYaw;
+  const depth = x * camera.sinYaw + z * camera.cosYaw;
+  return {
+    x: camera.w / 2 + right * camera.scale,
+    y: camera.centerY + (depth * camera.sin - y * camera.cos) * camera.scale
+  };
+}
+function groundOffset(right, depth) {
+  return {
+    x: right * camera.cosYaw + depth * camera.sinYaw,
+    z: -right * camera.sinYaw + depth * camera.cosYaw
+  };
+}
+function groundPoint(x, y) {
+  return groundOffset((x - camera.w / 2) / camera.scale, (y - camera.centerY) / (camera.scale * camera.sin));
+}
+function groundRectangle(ctx, x0, z0, x1, z1, y) {
+  const corner = project(x0, y, z0);
+  ctx.beginPath();
+  ctx.moveTo(corner.x, corner.y);
+  for (const [x, z] of [[x1, z0], [x1, z1], [x0, z1]]) {
+    const p = project(x, y, z);
+    ctx.lineTo(p.x, p.y);
+  }
+  ctx.closePath();
+}
+
+ui['view-mode'].addEventListener('click', () => {
+  orbitMode = !orbitMode;
+  ui['view-mode'].setAttribute('aria-pressed', String(orbitMode));
+  ui.arena.dataset.orbit = orbitMode;
+  updateDeploy();
+});
+ui['zoom-out'].addEventListener('click', () => turnCamera(0, 0, 1 / 1.24));
+ui['zoom-in'].addEventListener('click', () => turnCamera(0, 0, 1.24));
+ui['view-reset'].addEventListener('click', () => {
+  camera.yaw = camera.pitchOffset = 0;
+  camera.zoom = 1;
+  updateCamera();
+});
+
+const pointers = new Map();
+let multiTouch = false;
+let placementOrigin = null;
+function pointToAnchor(point) {
+  const box = ui.arena.getBoundingClientRect();
+  const {x, z} = groundPoint(point.x - box.left, point.y - box.top);
+  deploy.anchor = {x: Math.round(x * 4) / 4, z: Math.round(z * 4) / 4};
+  updateDeploy();
+}
+ui.arena.addEventListener('pointerdown', event => {
+  if (![0, 2].includes(event.button) || pointers.size >= 2) return;
+  const orbit = state.phase !== 'deploy' || orbitMode || event.button === 2;
+  const point = {x: event.clientX, y: event.clientY, orbit};
+  pointers.set(event.pointerId, point);
+  ui.arena.setPointerCapture(event.pointerId);
+  if (pointers.size === 2) {
+    multiTouch = true;
+    if (placementOrigin) {
+      deploy.anchor = placementOrigin;
+      placementOrigin = null;
+      updateDeploy();
+    }
+  } else if (!orbit && deploy.count) {
+    placementOrigin = {...deploy.anchor};
+    pointToAnchor(point);
+  }
+});
+ui.arena.addEventListener('pointermove', event => {
+  const point = pointers.get(event.pointerId);
+  if (!point) return;
+  const dx = event.clientX - point.x, dy = event.clientY - point.y;
+  if (pointers.size === 2) {
+    const other = [...pointers.values()].find(p => p !== point);
+    const before = Math.hypot(point.x - other.x, point.y - other.y);
+    const after = Math.hypot(event.clientX - other.x, event.clientY - other.y);
+    turnCamera(dx / 2, dy / 2, before >= 12 && after >= 12 ? after / before : 1);
+  } else if (!multiTouch) {
+    if (point.orbit) turnCamera(dx, dy);
+    else if (state.phase === 'deploy' && deploy.count) pointToAnchor({x: event.clientX, y: event.clientY});
+  }
+  point.x = event.clientX;
+  point.y = event.clientY;
+});
+for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+  ui.arena.addEventListener(type, event => {
+    pointers.delete(event.pointerId);
+    if (!pointers.size) {
+      multiTouch = false;
+      placementOrigin = null;
+    }
+  });
+}
+ui.arena.addEventListener('contextmenu', event => event.preventDefault());
+ui.arena.addEventListener('wheel', event => {
+  event.preventDefault();
+  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? camera.h : 1;
+  turnCamera(0, 0, Math.exp(-clamp(event.deltaY * unit, -160, 160) * .0025));
+}, {passive: false});
+ui.arena.addEventListener('keydown', event => {
+  const move = {ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1]}[event.key];
+  if (!move) return;
+  event.preventDefault();
+  if (state.phase !== 'deploy' || orbitMode) {
+    turnCamera(move[0] * 12, move[1] * 12);
+  } else if (deploy.count) {
+    const offset = groundOffset(move[0] * .5, move[1] * .5);
+    deploy.anchor.x += offset.x;
+    deploy.anchor.z += offset.z;
+    updateDeploy();
+  }
+});
+
+let fullscreenNoticeTimer;
+ui.fullscreen.addEventListener('click', async () => {
+  clearTimeout(fullscreenNoticeTimer);
+  ui['screen-notice'].hidden = true;
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await byId('app').requestFullscreen();
+  } catch {
+    ui['screen-notice'].textContent = '이 브라우저 창에서 전체화면을 열 수 없어. 외부 브라우저에서 다시 시도해줘.';
+    ui['screen-notice'].hidden = false;
+    fullscreenNoticeTimer = setTimeout(() => { ui['screen-notice'].hidden = true; }, 5000);
+  }
+});
+document.addEventListener('fullscreenchange', () => {
+  const fullscreen = Boolean(document.fullscreenElement);
+  ui.fullscreen.textContent = fullscreen ? '전체화면 닫기' : '전체화면';
+  ui.fullscreen.setAttribute('aria-pressed', String(fullscreen));
+});
+
+function createWebGLScene(gl) {
+  const program = gl.createProgram();
+  function attach(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+    gl.attachShader(program, shader);
+  }
+  attach(gl.VERTEX_SHADER, `
+    attribute vec3 aVertex, aNormal;
+    uniform vec3 uCenter, uSize;
+    uniform vec2 uScale, uTilt, uYaw;
+    uniform float uYOffset, uLit;
+    varying float vLight;
+    void main() {
+      vec3 p = aVertex * uSize + uCenter;
+      float right = p.x * uYaw.y - p.z * uYaw.x;
+      float depth = p.x * uYaw.x + p.z * uYaw.y;
+      gl_Position = vec4(right * uScale.x, (p.y * uTilt.y - depth * uTilt.x) * uScale.y + uYOffset,
+                         -(p.y * uTilt.x + depth * uTilt.y) * .026, 1.0);
+      float shade = .64 + .36 * max(0.0, dot(aNormal, vec3(-.46, .82, -.34)));
+      vLight = mix(1.0, shade, uLit);
+    }
+  `);
+  attach(gl.FRAGMENT_SHADER, `
+    precision mediump float;
+    uniform vec4 uColor;
+    varying float vLight;
+    void main() { gl_FragColor = vec4(uColor.rgb * vLight, uColor.a); }
+  `);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+  gl.useProgram(program);
+  const attributes = ['aVertex','aNormal'].map(name => gl.getAttribLocation(program, name));
+  const uniforms = Object.fromEntries(['uCenter', 'uSize', 'uScale', 'uTilt', 'uYaw', 'uYOffset', 'uLit', 'uColor']
+    .map(name => [name, gl.getUniformLocation(program, name)]));
+  for (const location of attributes) gl.enableVertexAttribArray(location);
+  function mesh(vertices) {
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+    return {buffer, count: vertices.length / 6};
+  }
+  function surface(positions, normal) { return positions.flatMap(vertex => [...vertex, ...normal]); }
+  const planeVertices = [[-.5,0,-.5], [.5,0,-.5], [-.5,0,.5], [-.5,0,.5], [.5,0,-.5], [.5,0,.5]];
+  const plane = mesh(surface(planeVertices, [0,1,0]));
+  const bodyVertices = [];
+  const diskVertices = [];
+  for (let i = 0; i < 28; i++) {
+    const a = i * 2 * Math.PI / 28, b = (i + 1) * 2 * Math.PI / 28;
+    const ax = Math.cos(a), az = Math.sin(a), bx = Math.cos(b), bz = Math.sin(b);
+    const cap = surface([[0,1,0], [ax,1,az], [bx,1,bz]], [0,1,0]);
+    diskVertices.push(...cap);
+    bodyVertices.push(...cap, ...surface(
+      [[ax,0,az], [bx,0,bz], [ax,1,az], [ax,1,az], [bx,0,bz], [bx,1,bz]],
+      [Math.cos((a+b)/2), 0, Math.sin((a+b)/2)]
+    ));
+  }
+  const body = mesh(bodyVertices), disk = mesh(diskVertices);
+  let active = null;
+  function draw(shape, x, y, z, sx, sy, sz, color, lit = 0) {
+    if (active !== shape) {
+      active = shape;
+      gl.bindBuffer(gl.ARRAY_BUFFER, shape.buffer);
+      gl.vertexAttribPointer(attributes[0], 3, gl.FLOAT, false, 24, 0);
+      gl.vertexAttribPointer(attributes[1], 3, gl.FLOAT, false, 24, 12);
+    }
+    gl.uniform3f(uniforms.uCenter, x, y, z);
+    gl.uniform3f(uniforms.uSize, sx, sy, sz);
+    gl.uniform4f(uniforms.uColor, color[0], color[1], color[2], color[3] ?? 1);
+    gl.uniform1f(uniforms.uLit, lit);
+    gl.drawArrays(gl.TRIANGLES, 0, shape.count);
+  }
+  const shapes = {plane, body, disk};
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  return {
+    begin() {
+      gl.viewport(0,0,gl.drawingBufferWidth,gl.drawingBufferHeight);
+      gl.clearColor(0,0,0,0);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      gl.uniform2f(uniforms.uScale, 2 * camera.scale / camera.w, 2 * camera.scale / camera.h);
+      gl.uniform2f(uniforms.uTilt, camera.sin, camera.cos);
+      gl.uniform2f(uniforms.uYaw, camera.sinYaw, camera.cosYaw);
+      gl.uniform1f(uniforms.uYOffset, 1 - 2 * camera.centerY / camera.h);
+    },
+    draw(shape, ...args) { draw(shapes[shape], ...args); }
+  };
+}
+
+function createCanvasScene(ctx) {
+  function rgba(color, shade = 1) {
+    const [r, g, b, a = 1] = color;
+    return 'rgba(' + [r, g, b].map(channel => Math.round(channel * shade * 255)).join(',') + ',' + a + ')';
+  }
+  return {
+    begin() {
+      ctx.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
+      ctx.clearRect(0, 0, camera.w, camera.h);
+    },
+    draw(shape, x, y, z, sx, sy, sz, color, lit = 0) {
+      const base = project(x,y,z);
+      const rx = sx * camera.scale;
+      const rz = sz * camera.scale * camera.sin;
+      if (shape === 'plane') {
+        ctx.fillStyle = rgba(color);
+        groundRectangle(ctx, x - sx / 2, z - sz / 2, x + sx / 2, z + sz / 2, y);
+        ctx.fill();
+        return;
+      }
+      const top = project(x,y+sy,z);
+      if (shape === 'body') {
+        const shade = ctx.createLinearGradient(top.x - rx, 0, top.x + rx, 0);
+        shade.addColorStop(0, rgba(color, .85));
+        shade.addColorStop(1, rgba(color, .65));
+        ctx.fillStyle = shade;
+        ctx.beginPath();
+        ctx.ellipse(top.x, top.y, rx, rz, 0, Math.PI, 0, true);
+        ctx.ellipse(base.x, base.y, rx, rz, 0, 0, Math.PI);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.fillStyle = rgba(color, lit ? .935 : 1);
+      ctx.beginPath();
+      ctx.ellipse(top.x, top.y, rx, rz, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  };
+}
+
+function createRenderer(scene) {
+  const draw = scene.draw;
+  const slabs = [];
+  function slab(x, y, z, width, depth, color) { slabs.push({x,y,z,width,depth,color}); }
+  slab(0,-.18,.10,47.2,31.3,[.17,.23,.24]);
+  slab(0,-.02,0,46,30,[.12,.17,.18]);
+  slab(0,.002,-7.5,46,15,[.153,.193,.199]);
+  slab(0,.002,7.5,46,15,[.115,.223,.221]);
+  const line = [.19,.274,.274], major = [.23,.33,.33];
+  for (let x = -22; x <= 22; x++) slab(x,.01,0,x % 4 === 0 ? .037 : .020,30,x % 4 === 0 ? major : line);
+  for (let z = -14; z <= 14; z++) {
+    if (z === 0) continue;
+    slab(0,.012,z,46,z % 4 === 0 ? .037 : .020,z % 4 === 0 ? major : line);
+  }
+  for (let x = -22; x <= 22; x += 2) slab(x,.02,0,1.12,.075,[.53,.70,.66]);
+  for (const x of [-23, 23]) slab(x,.02,0,.09,30,[.41,.56,.53]);
+  for (const z of [-15, 15]) slab(0,.02,z,46,.10,z > 0 ? [.37,.65,.58] : [.55,.37,.35]);
+  const teams = [
+    {body:[.25,.66,.57], rim:[.58,1,.87], cap:[.17,.46,.41], ghost:[.44,.92,.79]},
+    {body:[.76,.35,.28], rim:[1,.67,.55], cap:[.58,.24,.20], ghost:[1,.43,.34]}
+  ];
+  function unit(model, ghost = false, allowed = true) {
+    const life = model.hp === 0 ? model.fade / .23 : 1;
+    if (life <= 0) return;
+    const color = teams[model.team];
+    const radius = circle.radius * (model.hp === 0 ? .55 + .45 * life : 1);
+    const swing = Math.sin((model.swing || 0) / .16 * Math.PI) * .24;
+    const x = model.x + (model.aimX || 0) * swing;
+    const z = model.z + (model.aimZ || 0) * swing;
+    const height = (.58 + swing * .35) * life;
+    if (ghost) {
+      const tone = allowed ? color.ghost : teams[1].ghost;
+      draw('body',x,.025,z,radius,height,radius,[...tone,.26],1);
+      draw('body',x,height+.025,z,radius * .91,.052,radius * .91,[...tone,.80],1);
+      draw('disk',x,height+.081,z,radius * .69,0,radius * .69,[.11,.21,.20,.81]);
+      return;
+    }
+    draw('disk',x+.15,.021,z+.19,radius * 1.16,0,radius * 1.09,[.04,.08,.09,.68 * life]);
+    draw('body',x,.024,z,radius,height,radius,[...color.body,life],1);
+    draw('body',x,height+.024,z,radius * .94,.079*life,radius * .94,[...color.rim,life],1);
+    const cap = model.hurt > .08 ? [1,.94,.83] : color.cap;
+    draw('disk',x,height+.105*life,z,radius * .72,0,radius * .72,[...cap,life]);
+  }
+  return {
+    render(units, preview, valid) {
+      scene.begin();
+      for (const floor of slabs) draw('plane',floor.x,floor.y,floor.z,floor.width,1,floor.depth,floor.color);
+      const byDepth = (a, b) => (a.x - b.x) * camera.sinYaw + (a.z - b.z) * camera.cosYaw;
+      for (const model of [...units].sort(byDepth)) unit(model);
+      for (const model of [...preview].sort(byDepth)) unit(model,true,valid);
+    }
+  };
+}
+
+function drawMarks(ctx, units, preview, valid) {
+  ctx.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
+  ctx.clearRect(0, 0, camera.w, camera.h);
+  ctx.textAlign = 'center';
+  if (state.phase === 'deploy') {
+    const enemyTag = project(0,0,-6.4);
+    const allyTag = project(0,0,13.45);
+    ctx.font = '700 ' + clamp(camera.scale * .94, 10, 13) + 'px system-ui';
+    ctx.fillStyle = '#dcb3aa';
+    ctx.fillText('적 중앙선', enemyTag.x, enemyTag.y);
+    ctx.fillStyle = '#9bd5c9';
+    ctx.fillText('아군 배치 구역', allyTag.x, allyTag.y);
+    if (preview.length) {
+      const xs = preview.map(p => p.x), zs = preview.map(p => p.z);
+      ctx.strokeStyle = valid ? '#8cebd6a6' : '#ff9b87d1';
+      ctx.setLineDash([4,4]);
+      groundRectangle(ctx, Math.min(...xs) - 1.12, Math.min(...zs) - 1.12,
+        Math.max(...xs) + 1.12, Math.max(...zs) + 1.12, 0);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    return;
+  }
+  for (const u of units) {
+    if (u.hp <= 0 || u.hp >= circle.hp) continue;
+    const p = project(u.x,1.27,u.z);
+    const width = Math.max(9, 1.6 * camera.scale);
+    ctx.fillStyle = '#0b1417';
+    ctx.fillRect(p.x - width / 2 - 1, p.y - 1, width + 2, 5);
+    ctx.fillStyle = u.team === 0 ? '#9aeede' : '#ffab97';
+    ctx.fillRect(p.x - width / 2, p.y, width * u.hp / circle.hp, 3);
+  }
+}
+
+function boot() {
+  const gl = ui.arena.getContext('webgl', {antialias: true, alpha: true, premultipliedAlpha: false});
+  const fallback = gl ? null : ui.arena.getContext('2d');
+  if (!gl && !fallback) throw new Error('No graphics context is available.');
+  const renderer = createRenderer(gl ? createWebGLScene(gl) : createCanvasScene(fallback));
+  const marks = ui.marks.getContext('2d');
+  function resize() {
+    needsPaint = true;
+    const {width, height} = ui.arena.getBoundingClientRect();
+    camera.w = Math.max(width, 1);
+    camera.h = Math.max(height, 1);
+    camera.dpr = Math.min(devicePixelRatio || 1, 2);
+    const base = basePitch();
+    camera.pitchOffset = clamp(base + camera.pitchOffset, .35, 1.41) - base;
+    updateCamera();
+    for (const canvas of [ui.arena, ui.marks]) {
+      canvas.width = Math.round(camera.w * camera.dpr);
+      canvas.height = Math.round(camera.h * camera.dpr);
+    }
+  }
+  new ResizeObserver(resize).observe(ui.arena);
+  resize();
+  let previous = performance.now(), accumulator = 0;
+  function frame(now) {
+    const dt = Math.min(.5, Math.max(0, (now - previous) / 1000));
+    previous = now;
+    requestAnimationFrame(frame);
+    const animating = state.phase === 'battle'
+      || (state.phase === 'result' && state.units.some(unit => unit.fade || unit.hurt || unit.swing));
+    if (!needsPaint && !animating) return;
+    needsPaint = false;
+    if (state.phase === 'battle') {
+      accumulator += dt;
+      while (state.phase === 'battle' && accumulator >= tick) {
+        simulate();
+        accumulator -= tick;
+      }
+    } else accumulator = 0;
+    for (const unit of state.units) {
+      unit.hurt = Math.max(0, unit.hurt - dt);
+      unit.swing = Math.max(0, unit.swing - dt);
+      unit.fade = Math.max(0, unit.fade - dt);
+    }
+    const units = state.phase === 'deploy' ? [...deploy.groups.flat(), ...enemyLine] : state.units;
+    const preview = state.phase === 'deploy' ? formation() : [];
+    const valid = !placementError(preview);
+    renderer.render(units, preview, valid);
+    drawMarks(marks, units, preview, valid);
+  }
+  requestAnimationFrame(frame);
+}
+updatePhase();
+try { boot(); } catch (error) {
+  console.error(error);
+  ui.error.hidden = false;
+  for (const button of document.querySelectorAll('button')) button.disabled = true;
+}
+</script>
+</body>
+</html>
