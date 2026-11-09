@@ -94,7 +94,7 @@ button:disabled { opacity: .37; cursor: default; }
   .bar { display: grid; width: 178px; }
   .unit-picker { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); }
   .unit-picker .btn { grid-column: span 2; padding-inline: 0; font-size: 11px; }
-  .unit-picker .btn:nth-child(n+4) { grid-column: span 3; }
+  .unit-picker svg { display: none; }
   .field { display: flex; align-items: center; justify-content: space-between; }
   .stepper button { width: 37px; }
   .stepper input { width: 39px; }
@@ -104,6 +104,7 @@ button:disabled { opacity: .37; cursor: default; }
 @media (orientation: portrait) and (max-width: 550px) {
   .bar { flex-wrap: wrap; }
   .unit-picker, .actions { flex-basis: 100%; }
+  .unit-picker { flex-wrap: wrap; }
   .actions .btn { flex: 1; }
 }
 </style>
@@ -142,6 +143,7 @@ button:disabled { opacity: .37; cursor: default; }
         <button class="btn" id="unit-square" type="button" aria-pressed="false">■ 사각형</button>
         <button class="btn" id="unit-diamond" type="button" aria-pressed="false">◆ 마름모</button>
         <button class="btn" id="unit-trapezoid" type="button" aria-pressed="false"><svg width="11" height="9" viewBox="0 0 12 10" aria-hidden="true"><path fill="currentColor" d="M2 0h8l2 10H0z"/></svg> 사다리꼴</button>
+        <button class="btn" id="unit-hexagon" type="button" aria-pressed="false">⬢ 육각형</button>
       </div>
       <div class="field">
         <label class="field-name" for="count">대형 인원</label>
@@ -178,7 +180,7 @@ button:disabled { opacity: .37; cursor: default; }
 'use strict';
 const byId = id => document.getElementById(id);
 const ui = Object.fromEntries([
-  'arena', 'marks', 'hint', 'unit-circle', 'unit-triangle', 'unit-square', 'unit-diamond', 'unit-trapezoid',
+  'arena', 'marks', 'hint', 'unit-circle', 'unit-triangle', 'unit-square', 'unit-diamond', 'unit-trapezoid', 'unit-hexagon',
   'count', 'count-down', 'count-up', 'rows', 'rows-down', 'rows-up', 'undo', 'place',
   'start', 'deploy-bar', 'battle-bar', 'back', 'clock', 'result', 'verdict', 'summary', 'error',
   'zoom-out', 'zoom-in', 'view-reset', 'fullscreen', 'screen-notice'
@@ -196,14 +198,19 @@ const diamond = Object.freeze({ hp: 135, damage: 125, defense: 0, penetration: 0
 const trapezoid = Object.freeze({ hp: 180, damage: 52, defense: .15, penetration: .05,
   radius: circle.radius, width: 1.25, length: 1, moveSpeed: 2.5, attackGap: .90,
   attackRange: 3.25, approachRange: 1.5, attackHalfAngle: Math.PI / 3, maxTargets: 3 });
-const unitTypes = Object.freeze({circle, triangle, square, diamond, trapezoid});
+const hexagon = Object.freeze({ hp: 250, damage: 105, defense: .05, penetration: .15,
+  radius: 2.15 / 2, moveSpeed: 1.85, attackGap: 3.8, attackRange: 32.5, projectileSpeed: 5.62,
+  scatterRadius: 6, blastRadius: 2.5, coreRadius: 1, edgeDamage: 60, edgePenetration: .05 });
+const unitTypes = Object.freeze({circle, triangle, square, diamond, trapezoid, hexagon});
 const trapezoidCorners = [[-.68, 1], [.68, 1], [1, -1], [-1, -1]];
 const projectileRadius = .16;
+const shellRadius = .24;
+const impactDuration = .35;
 const arena = { x: 35, z: 35 };
-const spacing = 1.5;
 const deploy = {type: 'circle', count: 10, rows: 2, anchor: null, groups: [], units: [], ready: false, preview: null};
-const state = {phase: 'deploy', elapsed: 0, clockTenths: -1, units: [], projectiles: [], alive: [0, 0]};
+const state = {phase: 'deploy', elapsed: 0, clockTenths: -1, units: [], projectiles: [], impacts: [], alive: [0, 0]};
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(n, hi));
+const lerp = (a, b, t) => a + (b - a) * t;
 const distance2 = (a, b) => (a.x - b.x) ** 2 + (a.z - b.z) ** 2;
 let needsPaint = true;
 
@@ -215,6 +222,7 @@ function makePreview() {
   if (!anchor) return {units: [], team: null, bounds: null, error: ''};
   const team = anchor.z < 0 ? 1 : 0;
   const spec = unitTypes[type];
+  const spacing = 2 * spec.radius + .5;
   const halfWidth = (Math.ceil(count / rows) - 1) * spacing / 2 + (spec.width ?? 2 * spec.radius) / 2;
   const halfDepth = (rows - 1) * spacing / 2 + (spec.length ?? 2 * spec.radius) / 2;
   if (halfWidth > arena.x || halfDepth * 2 > arena.z) {
@@ -239,7 +247,7 @@ function makePreview() {
   if (bounds.left < -arena.x || bounds.right > arena.x || bounds.front < -arena.z || bounds.back > arena.z
       || (bounds.front < 0 && bounds.back > 0)) {
     error = '대형 전체를 한 진영의 구역 안에 놓아줘.';
-  } else if (units.some(u => deploy.units.some(v => distance2(u, v) < (circle.radius * 2 + .10) ** 2))) {
+  } else if (units.some(u => deploy.units.some(v => distance2(u, v) < (spec.radius + unitTypes[v.type].radius + .10) ** 2))) {
     error = '기존 유닛과 너무 가까워. 대형을 조금 옮겨줘.';
   }
   return {units, team, bounds, error};
@@ -325,6 +333,7 @@ ui.start.addEventListener('click', () => {
     vx: 0, vz: 0, aimX: 0, aimZ: 0, heading: unit.team === 0 ? Math.PI : 0
   }));
   state.projectiles = [];
+  state.impacts = [];
   const allies = state.units.filter(unit => unit.team === 0).length;
   state.alive = [allies, state.units.length - allies];
   state.phase = 'battle';
@@ -337,35 +346,66 @@ ui.back.addEventListener('click', () => {
   state.phase = 'deploy';
   state.units = [];
   state.projectiles = [];
+  state.impacts = [];
   updatePhase();
 });
 
-const contact = circle.radius * 2;
 const tick = 1 / 60;
 const diamondChaseMargin = 3;
 function damageAgainst(attack, target) {
   return attack.damage * (1 - unitTypes[target.type].defense * (1 - attack.penetration));
 }
-function closestEnemy(unit, living) {
+function attackReach(spec, target) {
+  if (spec.projectileSpeed || spec.attackHalfAngle) return spec.attackRange;
+  return spec.attackRange + (unitTypes[target.type].radius - circle.radius);
+}
+function closestEnemy(unit, living, attack = null) {
   let best = null, range2 = Infinity;
   for (const target of living) {
     if (target.team === unit.team) continue;
     const d2 = distance2(unit, target);
-    if (d2 < range2 - 1e-8) { best = target; range2 = d2; }
+    if (d2 < range2 - 1e-8 && (!attack || d2 <= attackReach(attack, target) ** 2)) {
+      best = target;
+      range2 = d2;
+    }
   }
   return {target: best, range2};
 }
-function lowestMaxHpEnemyWithin(unit, living, limit2) {
+function lowestMaxHpEnemyWithin(unit, living, limit2, attack = null) {
   let best = null, range2 = Infinity, maxHp = Infinity;
   for (const target of living) {
     if (target.team === unit.team) continue;
     const d2 = distance2(unit, target);
-    if (d2 > limit2) continue;
+    if (d2 > limit2 || (attack && d2 > attackReach(attack, target) ** 2)) continue;
     const hp = unitTypes[target.type].hp;
     if (hp < maxHp || (hp === maxHp && d2 < range2 - 1e-8)) {
       best = target;
       range2 = d2;
       maxHp = hp;
+    }
+  }
+  return {target: best, range2};
+}
+function densestEnemyWithin(unit, living, spec, counts) {
+  let best = null, range2 = Infinity, bestCount = 0;
+  const limit2 = spec.attackRange ** 2;
+  const blast2 = spec.blastRadius ** 2;
+  for (const target of living) {
+    if (target.team === unit.team) continue;
+    const d2 = distance2(unit, target);
+    if (d2 > limit2) continue;
+    let count = counts.get(target);
+    if (count === undefined) {
+      count = 0;
+      for (const neighbor of living) {
+        if (neighbor.team === target.team && distance2(neighbor, target) <= blast2) count++;
+      }
+      counts.set(target, count);
+    }
+    if (count > bestCount || (count === bestCount && d2 < range2 - 1e-8)) {
+      best = target;
+      range2 = d2;
+      bestCount = count;
     }
   }
   return {target: best, range2};
@@ -382,23 +422,24 @@ function moveUnits(living) {
     if (spec.projectileSpeed || spec.attackHalfAngle || unit.type === 'diamond') {
       unit.heading = Math.atan2(target.x - unit.x, target.z - unit.z);
     }
-    if (range2 <= (spec.approachRange ?? spec.attackRange) ** 2) continue;
+    if (range2 <= (spec.approachRange ?? attackReach(spec, target)) ** 2) continue;
     const range = Math.sqrt(range2);
     let dx = (target.x - unit.x) / range;
     let dz = (target.z - unit.z) / range;
-    let forward = 1.42, side = 0;
+    let forward = Infinity, side = 0;
     for (const other of living) {
       if (other.team !== unit.team || unit === other) continue;
       const rx = other.x - unit.x, rz = other.z - unit.z;
       const along = rx * dx + rz * dz;
       const lateral = -rx * dz + rz * dx;
-      if (along > .035 && along < forward && Math.abs(lateral) < contact * .88) {
+      const separation = spec.radius + unitTypes[other.type].radius;
+      if (along > .035 && along < Math.min(forward, separation + .42) && Math.abs(lateral) < separation * .88) {
         forward = along;
         side = Math.abs(lateral) > .018 ? -Math.sign(lateral) : (unit.id % 2 ? 1 : -1);
       }
     }
     if (side) [dx, dz] = [dx - dz * side * .82, dz + dx * side * .82];
-    const stopRange = spec.approachRange ?? (spec.projectileSpeed ? spec.attackRange : contact);
+    const stopRange = spec.approachRange ?? (spec.projectileSpeed ? spec.attackRange : spec.radius + unitTypes[target.type].radius);
     const step = Math.min(spec.moveSpeed * tick, range - stopRange) / Math.hypot(dx, dz);
     unit.vx = dx * step;
     unit.vz = dz * step;
@@ -412,6 +453,7 @@ function moveUnits(living) {
         const b = living[j];
         const dx = b.x - a.x, dz = b.z - a.z;
         const d2 = dx * dx + dz * dz;
+        const contact = unitTypes[a.type].radius + unitTypes[b.type].radius;
         if (d2 >= contact * contact) continue;
         const distance = Math.sqrt(d2);
         const amount = (contact - distance) * .5;
@@ -421,8 +463,9 @@ function moveUnits(living) {
       }
     }
     for (const u of living) {
-      u.x = clamp(u.x, -arena.x + circle.radius, arena.x - circle.radius);
-      u.z = clamp(u.z, -arena.z + circle.radius, arena.z - circle.radius);
+      const radius = unitTypes[u.type].radius;
+      u.x = clamp(u.x, -arena.x + radius, arena.x - radius);
+      u.z = clamp(u.z, -arena.z + radius, arena.z - radius);
     }
   }
 }
@@ -447,9 +490,65 @@ function firstProjectileHit(projectile, distance, living) {
   return target;
 }
 
+function deCasteljau(a, b, c, d, t) {
+  const ab = lerp(a, b, t), bc = lerp(b, c, t), cd = lerp(c, d, t);
+  return lerp(lerp(ab, bc, t), lerp(bc, cd, t), t);
+}
+function launchShell(unit, target, spec) {
+  const angle = Math.random() * 2 * Math.PI;
+  const offset = spec.scatterRadius * Math.sqrt(Math.random());
+  const impact = {x: target.x + Math.sin(angle) * offset, z: target.z + Math.cos(angle) * offset};
+  const origin = {x: unit.x, y: .224, z: unit.z};
+  const heading = Math.atan2(impact.x - origin.x, impact.z - origin.z);
+  const groundDistance = Math.sqrt(distance2(origin, impact));
+  const controlHeight = 1.2 + groundDistance * lerp(.24, .36, Math.random());
+  // The horizontal control points are at 1/3 and 2/3 of the segment, so only height needs cubic interpolation.
+  const heightAt = t => deCasteljau(origin.y, controlHeight, controlHeight * .9, 0, t);
+  // Use sampled arc length to advance at the specified speed along the curve.
+  const lengths = [0];
+  const segments = 32;
+  let previousY = origin.y;
+  for (let i = 1; i <= segments; i++) {
+    const y = heightAt(i / segments);
+    lengths.push(lengths[i - 1] + Math.hypot(groundDistance / segments, y - previousY));
+    previousY = y;
+  }
+  unit.heading = heading;
+  state.projectiles.push({
+    ...origin, team: unit.team, heading, attack: spec,
+    arc: {origin, impact, heightAt, lengths, segment: 0, traveled: 0}
+  });
+}
+function advanceShell(projectile, living, damage) {
+  const {arc, attack, team} = projectile;
+  const {origin, impact, heightAt, lengths} = arc;
+  arc.traveled += attack.projectileSpeed * tick;
+  if (arc.traveled >= lengths.at(-1)) {
+    state.impacts.push({...impact, team, radius: attack.blastRadius, remaining: impactDuration});
+    for (const unit of living) {
+      if (unit.team === team) continue;
+      const d2 = distance2(unit, impact);
+      if (d2 > attack.blastRadius ** 2) continue;
+      const falloff = clamp((Math.sqrt(d2) - attack.coreRadius) / (attack.blastRadius - attack.coreRadius), 0, 1);
+      damage[unit.id] += damageAgainst({
+        damage: lerp(attack.damage, attack.edgeDamage, falloff),
+        penetration: lerp(attack.penetration, attack.edgePenetration, falloff)
+      }, unit);
+    }
+    return false;
+  }
+  while (arc.traveled >= lengths[arc.segment + 1]) arc.segment++;
+  const begin = lengths[arc.segment], end = lengths[arc.segment + 1];
+  const t = (arc.segment + (arc.traveled - begin) / (end - begin)) / (lengths.length - 1);
+  projectile.x = lerp(origin.x, impact.x, t);
+  projectile.y = heightAt(t);
+  projectile.z = lerp(origin.z, impact.z, t);
+  return true;
+}
 function advanceProjectiles(living, damage) {
   if (!state.projectiles.length) return;
   state.projectiles = state.projectiles.filter(projectile => {
+    if (projectile.arc) return advanceShell(projectile, living, damage);
     const distance = Math.min(projectile.remaining, projectile.attack.projectileSpeed * tick);
     const target = firstProjectileHit(projectile, distance, living);
     if (target) {
@@ -487,17 +586,21 @@ function simulate() {
   moveUnits(living);
   const damage = new Float32Array(state.units.length);
   advanceProjectiles(living, damage);
+  let densityCounts;
   for (const unit of living) {
     unit.cooldown = Math.max(0, unit.cooldown - tick);
     if (unit.cooldown > 1e-8) continue;
     const spec = unitTypes[unit.type];
-    const attackRange2 = spec.attackRange ** 2;
-    const {target, range2} = unit.type === 'diamond'
-      ? lowestMaxHpEnemyWithin(unit, living, attackRange2)
-      : closestEnemy(unit, living);
-    if (!target || range2 > attackRange2) continue;
+    let aim;
+    if (spec.blastRadius) aim = densestEnemyWithin(unit, living, spec, densityCounts ??= new Map());
+    else if (unit.type === 'diamond') aim = lowestMaxHpEnemyWithin(unit, living, Infinity, spec);
+    else aim = closestEnemy(unit, living, spec);
+    const {target, range2} = aim;
+    if (!target) continue;
     unit.cooldown = spec.attackGap;
-    if (spec.projectileSpeed) {
+    if (spec.blastRadius) {
+      launchShell(unit, target, spec);
+    } else if (spec.projectileSpeed) {
       const heading = Math.atan2(target.x - unit.x, target.z - unit.z);
       unit.heading = heading;
       state.projectiles.push({
@@ -807,7 +910,9 @@ function createThreeScene(three, context) {
     diamond: new three.CylinderGeometry(1, 1, 1, 4).translate(0, .5, 0),
     'diamond-cap': new three.CircleGeometry(1, 4, -Math.PI / 2).rotateX(-Math.PI / 2),
     trapezoid: trapezoidGeometry(squareBody),
-    'trapezoid-cap': trapezoidGeometry(squareCap)
+    'trapezoid-cap': trapezoidGeometry(squareCap),
+    hexagon: new three.CylinderGeometry(1, 1, 1, 6).translate(0, .5, 0),
+    'hexagon-cap': new three.CircleGeometry(1, 6, -Math.PI / 2).rotateX(-Math.PI / 2)
   };
   // Reuse the same meshes and materials as primitives move between frames.
   const pools = new Map();
@@ -902,8 +1007,9 @@ function createCanvasScene(ctx) {
       const isSquare = shape === 'square' || shape === 'square-cap';
       const isDiamond = shape === 'diamond' || shape === 'diamond-cap';
       const isTrapezoid = shape === 'trapezoid' || shape === 'trapezoid-cap';
-      if (isTrapezoid || isSquare || isDiamond || shape === 'triangle' || shape === 'triangle-cap') {
-        const sides = isTrapezoid || isSquare || isDiamond ? 4 : 3;
+      const isHexagon = shape === 'hexagon' || shape === 'hexagon-cap';
+      if (isHexagon || isTrapezoid || isSquare || isDiamond || shape === 'triangle' || shape === 'triangle-cap') {
+        const sides = isHexagon ? 6 : (isTrapezoid || isSquare || isDiamond ? 4 : 3);
         const firstCorner = isSquare ? Math.PI / 4 : 0;
         const sinHeading = Math.sin(heading), cosHeading = Math.cos(heading);
         const corners = Array.from({length: sides}, (_, i) => {
@@ -1006,7 +1112,12 @@ function createRenderer(scene) {
       const byDepth = (a, b) => (a.x - b.x) * camera.sinYaw + (a.z - b.z) * camera.cosYaw;
       for (const model of [...units].sort(byDepth)) unit(model);
       for (const shot of projectiles) {
-        draw('triangle',shot.x,.28,shot.z,projectileRadius,.12,projectileRadius,teams[shot.team].rim,0,shot.heading);
+        if (shot.arc) {
+          draw('disk',shot.x,.035,shot.z,shellRadius,0,shellRadius,[.04,.08,.09,.55]);
+          draw('hexagon',shot.x,shot.y-.10,shot.z,shellRadius,.20,shellRadius,teams[shot.team].rim,0,shot.heading);
+        } else {
+          draw('triangle',shot.x,.28,shot.z,projectileRadius,.12,projectileRadius,teams[shot.team].rim,0,shot.heading);
+        }
       }
       for (const model of [...preview].sort(byDepth)) unit(model,true,valid);
       scene.end?.();
@@ -1033,6 +1144,20 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
   ctx.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
   ctx.clearRect(0, 0, camera.w, camera.h);
   ctx.textAlign = 'center';
+  for (const impact of state.impacts) {
+    const point = project(impact.x, .05, impact.z);
+    const radius = impact.radius * camera.scale;
+    const life = impact.remaining / impactDuration;
+    ctx.beginPath();
+    ctx.ellipse(point.x, point.y, radius, radius * camera.sin, 0, 0, 2 * Math.PI);
+    ctx.fillStyle = ctx.strokeStyle = impact.team === 0 ? '#bfffe9' : '#ffd1bf';
+    ctx.globalAlpha = life * .32;
+    ctx.fill();
+    ctx.globalAlpha = life * .85;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
   for (const unit of units) {
     const spec = unitTypes[unit.type];
     if (!spec.attackHalfAngle || !unit.swing) continue;
@@ -1059,6 +1184,7 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
         else if (model.type === 'square') polygonMark(ctx, model, .4, radius * Math.SQRT2, 4);
         else if (model.type === 'diamond') polygonMark(ctx, model, .4, radius * diamond.length, 4, diamond.width / diamond.length);
         else if (model.type === 'trapezoid') polygonMark(ctx, model, .4, radius, 4, trapezoid.width);
+        else if (model.type === 'hexagon') polygonMark(ctx, model, .4, radius * hexagon.radius / circle.radius, 6);
         else {
           ctx.beginPath();
           ctx.arc(point.x, point.y, radius, 0, 2 * Math.PI);
@@ -1068,11 +1194,10 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
     }
     ctx.globalAlpha = 1;
   }
-  if (projectileRadius * camera.scale < 1.35) {
-    for (const shot of projectiles) {
-      ctx.fillStyle = shot.team === 0 ? '#abffed' : '#ffd1bf';
-      polygonMark(ctx, shot, .40, 1.35, 3);
-    }
+  for (const shot of projectiles) {
+    if ((shot.arc ? shellRadius : projectileRadius) * camera.scale >= 1.35) continue;
+    ctx.fillStyle = shot.team === 0 ? '#abffed' : '#ffd1bf';
+    polygonMark(ctx, shot, shot.arc ? shot.y : .40, 1.35, shot.arc ? 6 : 3);
   }
   if (state.phase === 'deploy') {
     const enemyTag = project(0,0,-arena.z * .74);
@@ -1116,7 +1241,7 @@ function boot() {
     previous = now;
     requestAnimationFrame(frame);
     const animating = state.phase === 'battle'
-      || (state.phase === 'result' && state.units.some(unit => unit.fade || unit.hurt || unit.swing));
+      || (state.phase === 'result' && (state.impacts.length || state.units.some(unit => unit.fade || unit.hurt || unit.swing)));
     if (!needsPaint && !animating) return;
     needsPaint = false;
     if (state.phase === 'battle') {
@@ -1130,6 +1255,10 @@ function boot() {
       unit.hurt = Math.max(0, unit.hurt - dt);
       unit.swing = Math.max(0, unit.swing - dt);
       unit.fade = Math.max(0, unit.fade - dt);
+    }
+    if (state.impacts.length) {
+      for (const impact of state.impacts) impact.remaining -= dt;
+      state.impacts = state.impacts.filter(impact => impact.remaining > 0);
     }
     const units = state.phase === 'deploy' ? deploy.units : state.units;
     const preview = state.phase === 'deploy' ? deploy.preview.units : [];
