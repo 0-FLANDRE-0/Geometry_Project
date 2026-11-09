@@ -409,12 +409,9 @@ function updateCamera() {
   camera.sinYaw = Math.sin(camera.yaw);
   camera.cosYaw = Math.cos(camera.yaw);
   camera.centerY = camera.h / 2;
-  const c = Math.abs(camera.cosYaw), s = Math.abs(camera.sinYaw);
   const width = arena.x * 2 + 2, depth = arena.z * 2 + 2;
-  const boardWidth = width * c + depth * s;
-  const boardDepth = width * s + depth * c;
-  // Fit the overhead footprint so tilting does not change the zoom.
-  const fit = Math.min((camera.w - 12) / boardWidth, (camera.h - 12) / (boardDepth + 1));
+  // Fit the starting view, then preserve the zoom at every camera angle.
+  const fit = Math.min((camera.w - 12) / width, (camera.h - 12) / (depth + 1));
   camera.scale = Math.max(.01, fit) * camera.zoom;
   ui['zoom-out'].disabled = camera.zoom <= .65;
   ui['zoom-in'].disabled = camera.zoom >= maxZoom;
@@ -842,16 +839,6 @@ function drawMarks(ctx, units, preview, valid) {
       ctx.stroke();
       ctx.setLineDash([]);
     }
-    return;
-  }
-  for (const u of units) {
-    if (u.hp <= 0 || u.hp >= circle.hp) continue;
-    const p = project(u.x,1.27,u.z);
-    const width = Math.max(9, 1.6 * camera.scale);
-    ctx.fillStyle = '#0b1417';
-    ctx.fillRect(p.x - width / 2 - 1, p.y - 1, width + 2, 5);
-    ctx.fillStyle = u.team === 0 ? '#9aeede' : '#ffab97';
-    ctx.fillRect(p.x - width / 2, p.y, width * u.hp / circle.hp, 3);
   }
 }
 
