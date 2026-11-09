@@ -212,9 +212,9 @@ const diamond = Object.freeze({ hp: 135, damage: 125, defense: 0, penetration: 0
 const trapezoid = Object.freeze({ hp: 180, damage: 52, defense: .15, penetration: .05,
   radius: circle.radius, width: 1.25, length: 1, moveSpeed: 2.5, attackGap: .90,
   attackRange: 3.25, approachRange: 1.5, attackHalfAngle: Math.PI / 3, maxTargets: 3 });
-const hexagon = Object.freeze({ hp: 280, damage: 105, defense: .05, penetration: .15,
+const hexagon = Object.freeze({ hp: 280, damage: 165, defense: .05, penetration: .15,
   radius: 2.15 / 2, moveSpeed: 1.85, attackGap: 3.8, attackRange: 32.5, projectileSpeed: 8.2,
-  scatterRadius: 4, blastRadius: 1.8, coreRadius: 1.25, edgeDamage: 60, edgePenetration: .05 });
+  scatterRadius: 4.5, blastRadius: 2.65, coreRadius: 1.5, edgeDamage: 75, edgePenetration: .05 });
 const pentagon = Object.freeze({ hp: 450, damage: 380, defense: .55, penetration: .65,
   radius: 1.85 / 2, moveSpeed: 1.45, attackGap: 3.5, attackRange: 18, approachRange: 4,
   hitscan: true, splashRadius: .8, splashDamage: 55 });
