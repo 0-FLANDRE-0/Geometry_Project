@@ -195,13 +195,13 @@ const circle = Object.freeze({ hp: 200, damage: 75, defense: .10, penetration: 0
   radius: .5, moveSpeed: 3.06, attackGap: .82, attackRange: 1.0625 });
 const triangle = Object.freeze({ hp: 120, damage: 100, defense: 0, penetration: .20,
   radius: circle.radius, moveSpeed: circle.moveSpeed, attackGap: 1.2, attackRange: 10,
-  projectileSpeed: circle.moveSpeed * 2 });
+  approachRange: 9, projectileSpeed: circle.moveSpeed * 2 });
 const piercing = Object.freeze({ hp: 75, damage: 145, defense: .02, penetration: .28,
   width: 1, length: 1.45, radius: Math.hypot(.5, .725), box: true, shape: 'triangle',
-  moveSpeed: 2.90, attackGap: 1.35, attackRange: 11.5, projectileSpeed: 7.85, projectileHits: 2 });
+  moveSpeed: 2.90, attackGap: 1.35, attackRange: 11.5, approachRange: 10.5, projectileSpeed: 7.85, projectileHits: 2 });
 const spread = Object.freeze({ hp: 120, damage: 55, defense: 0, penetration: .25,
   width: 1.45, length: 1, radius: Math.hypot(.725, .5), box: true, shape: 'triangle',
-  moveSpeed: 3, attackGap: 1, attackRange: 8.5, projectileSpeed: 5.15, homingTurnRate: Math.PI * 4 / 3,
+  moveSpeed: 3, attackGap: 1, attackRange: 8.5, approachRange: 7.5, projectileSpeed: 5.15, homingTurnRate: Math.PI * 4 / 3,
   sideAngles: Object.freeze([-Math.PI / 10, Math.PI / 10]),
   sideAttack: Object.freeze({damage: 45, penetration: .15, projectileSpeed: 5.15}) });
 const square = Object.freeze({ hp: 265, damage: 40, defense: .40, penetration: 0,
@@ -220,7 +220,7 @@ const pentagon = Object.freeze({ hp: 450, damage: 380, defense: .55, penetration
   hitscan: true, splashRadius: .8, splashDamage: 55 });
 const octagon = Object.freeze({ hp: 1000, damage: 25, defense: .80, penetration: 1,
   radius: 2.75 / 2, moveSpeed: .75, attackGap: 5, attackRange: 32, approachRange: 0,
-  waveSpeed: 3.85, edgeDamage: 5 });
+  waveSpeed: 3.85, edgeDamage: 5, holdsGround: true });
 const wall = Object.freeze({ hp: 500, damage: 10, defense: .55, penetration: .05,
   width: 1.65, length: 1, radius: Math.hypot(.825, .5), moveSpeed: 3.06, attackGap: 1,
   attackRange: circle.attackRange, box: true, shape: 'square', rootOnMeleeHit: .5 });
@@ -574,10 +574,15 @@ function moveUnits(living) {
     unit.vz = dz * step;
     if (unit.type === 'diamond') unit.heading = Math.atan2(unit.vx, unit.vz);
   }
-  for (const unit of living) { unit.x += unit.vx; unit.z += unit.vz; }
-  separateUnits(living);
+  const holdOrigins = new Map();
+  for (const unit of living) {
+    if (unitTypes[unit.type].holdsGround) holdOrigins.set(unit, {x: unit.x, z: unit.z});
+    unit.x += unit.vx;
+    unit.z += unit.vz;
+  }
+  separateUnits(living, holdOrigins);
 }
-function separateUnits(living) {
+function separateUnits(living, holdOrigins) {
   const cells = new Array(collisionCols * collisionRows);
   const locations = new Int32Array(living.length);
   const radii = living.map(unit => unitTypes[unit.type].radius);
@@ -620,18 +625,30 @@ function separateUnits(living) {
           const d2 = dx * dx + dz * dz;
           const contact = radii[i] + radii[j];
           if (d2 >= contact * contact) continue;
+          let normalX, normalZ, depth;
           if (rectangles[i] || rectangles[j]) {
             const hit = rectangleContact(a, b, 0);
             if (!hit) continue;
-            const half = hit.depth * .5;
-            a.x -= hit.x * half; a.z -= hit.z * half;
-            b.x += hit.x * half; b.z += hit.z * half;
+            normalX = hit.x;
+            normalZ = hit.z;
+            depth = hit.depth;
           } else {
             const distance = Math.sqrt(d2);
-            const amount = (contact - distance) * .5;
-            const sx = distance > 1e-8 ? dx / distance * amount : amount;
-            const sz = distance > 1e-8 ? dz / distance * amount : 0;
-            a.x -= sx; a.z -= sz; b.x += sx; b.z += sz;
+            normalX = distance > 1e-8 ? dx / distance : 1;
+            normalZ = distance > 1e-8 ? dz / distance : 0;
+            depth = contact - distance;
+          }
+          const aOrigin = a.team !== b.team && holdOrigins.get(a);
+          const bOrigin = a.team !== b.team && holdOrigins.get(b);
+          if (aOrigin && bOrigin) {
+            // Opposing anchors block each other's step rather than sliding each other back.
+            a.x = aOrigin.x; a.z = aOrigin.z;
+            b.x = bOrigin.x; b.z = bOrigin.z;
+          } else {
+            const aShare = aOrigin ? 0 : bOrigin ? depth : depth * .5;
+            const bShare = bOrigin ? 0 : aOrigin ? depth : depth * .5;
+            a.x -= normalX * aShare; a.z -= normalZ * aShare;
+            b.x += normalX * bShare; b.z += normalZ * bShare;
           }
           updateCell(j);
           updateCell(i);
