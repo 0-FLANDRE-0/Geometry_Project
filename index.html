@@ -195,7 +195,7 @@ const diamond = Object.freeze({ hp: 135, damage: 125, defense: 0, penetration: 0
   attackRange: circle.attackRange });
 const trapezoid = Object.freeze({ hp: 180, damage: 52, defense: .15, penetration: .05,
   radius: circle.radius, width: 1.25, length: 1, moveSpeed: 2.5, attackGap: .90,
-  attackRange: 3.25, approachRange: 2, attackHalfAngle: Math.PI / 3, maxTargets: 3 });
+  attackRange: 3.25, approachRange: 1.5, attackHalfAngle: Math.PI / 3, maxTargets: 3 });
 const unitTypes = Object.freeze({circle, triangle, square, diamond, trapezoid});
 const trapezoidCorners = [[-.68, 1], [.68, 1], [1, -1], [-1, -1]];
 const projectileRadius = .16;
