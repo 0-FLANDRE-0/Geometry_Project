@@ -199,13 +199,14 @@ const trapezoid = Object.freeze({ hp: 180, damage: 52, defense: .15, penetration
   radius: circle.radius, width: 1.25, length: 1, moveSpeed: 2.5, attackGap: .90,
   attackRange: 3.25, approachRange: 1.5, attackHalfAngle: Math.PI / 3, maxTargets: 3 });
 const hexagon = Object.freeze({ hp: 250, damage: 105, defense: .05, penetration: .15,
-  radius: 2.15 / 2, moveSpeed: 1.85, attackGap: 3.8, attackRange: 32.5, projectileSpeed: 6.85,
-  scatterRadius: 6, blastRadius: 1.8, coreRadius: .85, edgeDamage: 60, edgePenetration: .05 });
+  radius: 2.15 / 2, moveSpeed: 1.85, attackGap: 3.8, attackRange: 32.5, projectileSpeed: 8.2,
+  scatterRadius: 6, blastRadius: 1.8, coreRadius: 1.25, edgeDamage: 60, edgePenetration: .05 });
 const unitTypes = Object.freeze({circle, triangle, square, diamond, trapezoid, hexagon});
 const trapezoidCorners = [[-.68, 1], [.68, 1], [1, -1], [-1, -1]];
 const projectileRadius = .16;
 const shellRadius = .24;
-const impactDuration = .35;
+const shellTrailLength = 1.65;
+const impactDuration = .48;
 const arena = { x: 35, z: 35 };
 const deploy = {type: 'circle', count: 10, rows: 2, anchor: null, groups: [], units: [], ready: false, preview: null};
 const state = {phase: 'deploy', elapsed: 0, clockTenths: -1, units: [], projectiles: [], impacts: [], alive: [0, 0]};
@@ -575,6 +576,10 @@ function launchShell(unit, target, spec) {
     arc: {origin, impact, heightAt, lengths, segment: 0, traveled: 0}
   });
 }
+function shellParameter(lengths, distance, segment) {
+  const begin = lengths[segment], end = lengths[segment + 1];
+  return (segment + (distance - begin) / (end - begin)) / (lengths.length - 1);
+}
 function advanceShell(projectile, living, damage) {
   const {arc, attack, team} = projectile;
   const {origin, impact, heightAt, lengths} = arc;
@@ -594,8 +599,7 @@ function advanceShell(projectile, living, damage) {
     return false;
   }
   while (arc.traveled >= lengths[arc.segment + 1]) arc.segment++;
-  const begin = lengths[arc.segment], end = lengths[arc.segment + 1];
-  const t = (arc.segment + (arc.traveled - begin) / (end - begin)) / (lengths.length - 1);
+  const t = shellParameter(lengths, arc.traveled, arc.segment);
   projectile.x = lerp(origin.x, impact.x, t);
   projectile.y = heightAt(t);
   projectile.z = lerp(origin.z, impact.z, t);
@@ -1196,24 +1200,93 @@ function polygonMark(ctx, model, y, radius, sides, widthRatio = 1) {
   }));
 }
 
+function drawShellTrail(ctx, shot) {
+  const {origin, impact, heightAt, lengths, traveled, segment} = shot.arc;
+  if (traveled <= 0) return;
+  const head = project(shot.x, shot.y, shot.z);
+  const margin = shellTrailLength * camera.scale + 5;
+  if (head.x < -margin || head.x > camera.w + margin || head.y < -margin || head.y > camera.h + margin) return;
+  const tailDistance = Math.max(0, traveled - shellTrailLength);
+  let tailSegment = segment;
+  while (lengths[tailSegment] > tailDistance) tailSegment--;
+  const tailT = shellParameter(lengths, tailDistance, tailSegment);
+  const headT = shellParameter(lengths, traveled, segment);
+  const glintT = lerp(tailT, headT, .62);
+  const tail = project(lerp(origin.x, impact.x, tailT), heightAt(tailT), lerp(origin.z, impact.z, tailT));
+  const glint = project(lerp(origin.x, impact.x, glintT), heightAt(glintT), lerp(origin.z, impact.z, glintT));
+  const pulse = .5 + .5 * Math.sin(traveled * 8.5 + shot.heading * 2);
+  const width = clamp(camera.scale * .23, 1.2, 3.1);
+  ctx.strokeStyle = shot.team === 0 ? '#69f3ce' : '#ff9c69';
+  ctx.globalAlpha = .23 + pulse * .24;
+  ctx.lineWidth = width * 1.9;
+  ctx.beginPath();
+  ctx.moveTo(tail.x, tail.y);
+  ctx.lineTo(glint.x, glint.y);
+  ctx.lineTo(head.x, head.y);
+  ctx.stroke();
+  ctx.strokeStyle = shot.team === 0 ? '#dcfff4' : '#fff3cb';
+  ctx.globalAlpha = .43 + pulse * .54;
+  ctx.lineWidth = width;
+  ctx.beginPath();
+  ctx.moveTo(glint.x, glint.y);
+  ctx.lineTo(head.x, head.y);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+function drawShellImpact(ctx, impact) {
+  const point = project(impact.x, .05, impact.z);
+  const radius = impact.radius * camera.scale;
+  if (point.x < -radius || point.x > camera.w + radius || point.y < -radius || point.y > camera.h + radius) return;
+  const depth = radius * camera.sin;
+  const life = impact.remaining / impactDuration;
+  const spread = 1 - life ** 3;
+  const wave = lerp(.14, 1, spread);
+  const color = impact.team === 0 ? '#9dffdc' : '#ffb68e';
+
+  // Keep the actual damage boundary visible as the shockwave expands inside it.
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = life * .34;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.ellipse(point.x, point.y, radius, depth, 0, 0, 2 * Math.PI);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(point.x, point.y, radius * wave, depth * wave, 0, 0, 2 * Math.PI);
+  ctx.fillStyle = color;
+  ctx.globalAlpha = life * .22;
+  ctx.fill();
+  ctx.globalAlpha = life * .85;
+  ctx.lineWidth = lerp(1, 2.5, life);
+  ctx.stroke();
+
+  const flash = Math.max(0, (life - .46) / .54);
+  if (flash > 0 && radius >= 4) {
+    const core = lerp(.58, .22, flash);
+    ctx.fillStyle = '#fff5d5';
+    ctx.globalAlpha = flash * .82;
+    ctx.beginPath();
+    ctx.ellipse(point.x, point.y, radius * core, depth * core, 0, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.strokeStyle = '#fff5d5';
+    ctx.globalAlpha = flash * .86;
+    ctx.lineWidth = 1.35;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const angle = impact.x * .32 + impact.z * .63 + i * Math.PI / 3;
+      const dx = Math.cos(angle) * radius, dy = Math.sin(angle) * depth;
+      const end = Math.min(1, wave + .19 + (i % 2) * .11);
+      ctx.moveTo(point.x + dx * wave * .7, point.y + dy * wave * .7);
+      ctx.lineTo(point.x + dx * end, point.y + dy * end);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
 function drawMarks(ctx, units, preview, valid, projectiles) {
   ctx.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
   ctx.clearRect(0, 0, camera.w, camera.h);
   ctx.textAlign = 'center';
-  for (const impact of state.impacts) {
-    const point = project(impact.x, .05, impact.z);
-    const radius = impact.radius * camera.scale;
-    const life = impact.remaining / impactDuration;
-    ctx.beginPath();
-    ctx.ellipse(point.x, point.y, radius, radius * camera.sin, 0, 0, 2 * Math.PI);
-    ctx.fillStyle = ctx.strokeStyle = impact.team === 0 ? '#bfffe9' : '#ffd1bf';
-    ctx.globalAlpha = life * .32;
-    ctx.fill();
-    ctx.globalAlpha = life * .85;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-  }
-  ctx.globalAlpha = 1;
+  for (const impact of state.impacts) drawShellImpact(ctx, impact);
   for (const unit of units) {
     const spec = unitTypes[unit.type];
     if (!spec.attackHalfAngle || !unit.swing) continue;
@@ -1250,11 +1323,14 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
     }
     ctx.globalAlpha = 1;
   }
+  ctx.lineCap = 'round';
   for (const shot of projectiles) {
+    if (shot.arc) drawShellTrail(ctx, shot);
     if ((shot.arc ? shellRadius : projectileRadius) * camera.scale >= 1.35) continue;
     ctx.fillStyle = shot.team === 0 ? '#abffed' : '#ffd1bf';
     polygonMark(ctx, shot, shot.arc ? shot.y : .40, 1.35, shot.arc ? 6 : 3);
   }
+  ctx.lineCap = 'butt';
   if (state.phase === 'deploy') {
     const enemyTag = project(0,0,-arena.z * .74);
     const allyTag = project(0,0,arena.z * .76);
@@ -1300,6 +1376,10 @@ function boot() {
       || (state.phase === 'result' && (state.impacts.length || state.units.some(unit => unit.fade || unit.hurt || unit.swing)));
     if (!needsPaint && !animating) return;
     needsPaint = false;
+    if (state.impacts.length) {
+      for (const impact of state.impacts) impact.remaining -= dt;
+      state.impacts = state.impacts.filter(impact => impact.remaining > 0);
+    }
     if (state.phase === 'battle') {
       accumulator += dt;
       while (state.phase === 'battle' && accumulator >= tick) {
@@ -1311,10 +1391,6 @@ function boot() {
       unit.hurt = Math.max(0, unit.hurt - dt);
       unit.swing = Math.max(0, unit.swing - dt);
       unit.fade = Math.max(0, unit.fade - dt);
-    }
-    if (state.impacts.length) {
-      for (const impact of state.impacts) impact.remaining -= dt;
-      state.impacts = state.impacts.filter(impact => impact.remaining > 0);
     }
     const units = state.phase === 'deploy' ? deploy.units : state.units;
     const preview = state.phase === 'deploy' ? deploy.preview.units : [];
