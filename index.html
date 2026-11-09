@@ -334,6 +334,7 @@ ui.back.addEventListener('click', () => {
 
 const contact = circle.radius * 2;
 const tick = 1 / 60;
+const diamondChaseMargin = 3;
 function damageAgainst(attack, target) {
   return attack.damage * (1 - unitTypes[target.type].defense * (1 - attack.penetration));
 }
@@ -346,11 +347,29 @@ function closestEnemy(unit, living) {
   }
   return {target: best, range2};
 }
+function lowestMaxHpEnemyWithin(unit, living, limit2) {
+  let best = null, range2 = Infinity, maxHp = Infinity;
+  for (const target of living) {
+    if (target.team === unit.team) continue;
+    const d2 = distance2(unit, target);
+    if (d2 > limit2) continue;
+    const hp = unitTypes[target.type].hp;
+    if (hp < maxHp || (hp === maxHp && d2 < range2 - 1e-8)) {
+      best = target;
+      range2 = d2;
+      maxHp = hp;
+    }
+  }
+  return {target: best, range2};
+}
 function moveUnits(living) {
   for (const unit of living) {
     unit.vx = unit.vz = 0;
-    const {target, range2} = closestEnemy(unit, living);
-    if (!target) continue;
+    const nearest = closestEnemy(unit, living);
+    if (!nearest.target) continue;
+    const {target, range2} = unit.type === 'diamond'
+      ? lowestMaxHpEnemyWithin(unit, living, (Math.sqrt(nearest.range2) + diamondChaseMargin) ** 2)
+      : nearest;
     const spec = unitTypes[unit.type];
     if (spec.projectileSpeed || unit.type === 'diamond') {
       unit.heading = Math.atan2(target.x - unit.x, target.z - unit.z);
@@ -446,8 +465,11 @@ function simulate() {
     unit.cooldown = Math.max(0, unit.cooldown - tick);
     if (unit.cooldown > 1e-8) continue;
     const spec = unitTypes[unit.type];
-    const {target, range2} = closestEnemy(unit, living);
-    if (!target || range2 > spec.attackRange ** 2) continue;
+    const attackRange2 = spec.attackRange ** 2;
+    const {target, range2} = unit.type === 'diamond'
+      ? lowestMaxHpEnemyWithin(unit, living, attackRange2)
+      : closestEnemy(unit, living);
+    if (!target || range2 > attackRange2) continue;
     unit.cooldown = spec.attackGap;
     if (spec.projectileSpeed) {
       const heading = Math.atan2(target.x - unit.x, target.z - unit.z);
