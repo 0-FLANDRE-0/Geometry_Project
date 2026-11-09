@@ -422,7 +422,11 @@ function moveUnits(living) {
     if (spec.projectileSpeed || spec.attackHalfAngle || unit.type === 'diamond') {
       unit.heading = Math.atan2(target.x - unit.x, target.z - unit.z);
     }
-    if (range2 <= (spec.approachRange ?? attackReach(spec, target)) ** 2) continue;
+    const contact = spec.radius + unitTypes[target.type].radius;
+    const approachRange = spec.approachRange === undefined
+      ? attackReach(spec, target)
+      : Math.max(spec.approachRange, contact);
+    if (range2 <= approachRange ** 2) continue;
     const range = Math.sqrt(range2);
     let dx = (target.x - unit.x) / range;
     let dz = (target.z - unit.z) / range;
@@ -439,7 +443,7 @@ function moveUnits(living) {
       }
     }
     if (side) [dx, dz] = [dx - dz * side * .82, dz + dx * side * .82];
-    const stopRange = spec.approachRange ?? (spec.projectileSpeed ? spec.attackRange : spec.radius + unitTypes[target.type].radius);
+    const stopRange = spec.approachRange !== undefined || spec.projectileSpeed ? approachRange : contact;
     const step = Math.min(spec.moveSpeed * tick, range - stopRange) / Math.hypot(dx, dz);
     unit.vx = dx * step;
     unit.vz = dz * step;
