@@ -217,7 +217,7 @@ const wall = Object.freeze({ hp: 500, damage: 10, defense: .55, penetration: .05
   attackRange: circle.attackRange, rectangle: true, rootOnMeleeHit: .5 });
 const breach = Object.freeze({ hp: 350, damage: 20, defense: .50, penetration: .15,
   width: 1, length: 1.55, radius: Math.hypot(.5, .775), moveSpeed: 4.5, attackGap: .85,
-  attackRange: circle.attackRange, rectangle: true, breakthrough: true, contactPushSpeed: .75 });
+  attackRange: circle.attackRange, rectangle: true, breakthrough: true, contactPushSpeed: .75, attackPush: .6 });
 const unitTypes = Object.freeze({circle, triangle, square, diamond, trapezoid, hexagon, pentagon, octagon, wall, breach});
 const trapezoidCorners = [[-.68, 1], [.68, 1], [1, -1], [-1, -1]];
 const projectileRadius = .16;
@@ -382,6 +382,7 @@ const collisionCellSize = 2 * maxUnitRadius;
 const collisionCols = Math.ceil(2 * arena.x / collisionCellSize);
 const collisionRows = Math.ceil(2 * arena.z / collisionCellSize);
 const breachAngles = [0, .38, -.38, .72, -.72];
+const breachShoveLimit = 3;
 function rectangleFrame(unit, spec) {
   const heading = facingOf(unit);
   return {cos: Math.cos(heading), sin: Math.sin(heading), w: spec.width / 2, l: spec.length / 2};
@@ -537,7 +538,25 @@ function steerBreakthrough(unit, spec, living, targetHeading) {
   unit.vz = Math.cos(heading) * spec.moveSpeed * tick;
   return true;
 }
+function supportingBreach(unit, leaders) {
+  let closest = null, limit = 3.2 ** 2;
+  for (const leader of leaders) {
+    if (leader.team !== unit.team) continue;
+    const opening = leader.breachOpening;
+    const dx = leader.x - unit.x, dz = leader.z - unit.z;
+    const distance = dx * dx + dz * dz;
+    const progress = (leader.x - opening.startX) * opening.dx + (leader.z - opening.startZ) * opening.dz;
+    if (distance < limit && progress > .35 && dx * opening.dx + dz * opening.dz > .25
+        && Math.abs(dx * opening.dz - dz * opening.dx) < 1) {
+      closest = opening;
+      limit = distance;
+    }
+  }
+  return closest;
+}
 function moveUnits(living) {
+  const leaders = living.filter(unit => unit.breachOpening?.until > state.elapsed
+    && !(unit.rootedUntil > state.elapsed + 1e-8));
   for (const unit of living) {
     unit.vx = unit.vz = 0;
     const spec = unitTypes[unit.type];
@@ -548,14 +567,31 @@ function moveUnits(living) {
     const {target, range2} = unit.type === 'diamond'
       ? enemyByMaxHpWithin(unit, living, (Math.sqrt(nearest.range2) + diamondChaseMargin) ** 2)
       : nearest;
+    let heading;
     if (spec.rectangle) {
       const attackTarget = range2 <= attackReach(spec, maxUnitRadius) ** 2 && !attackInRange(unit, target, spec, range2)
         ? closestEnemy(unit, living, spec).target
         : null;
       const focus = attackTarget ?? target;
-      const heading = focus.x === unit.x && focus.z === unit.z
+      heading = focus.x === unit.x && focus.z === unit.z
         ? facingOf(unit)
         : Math.atan2(focus.x - unit.x, focus.z - unit.z);
+    }
+    if (unit.breachOpening && (rooted || state.elapsed >= unit.breachOpening.until)) unit.breachOpening = null;
+    const supportsBreach = unit.type === 'circle' || unit.type === 'square';
+    const opening = unit.breachOpening ?? (supportsBreach && leaders.length ? supportingBreach(unit, leaders) : null);
+    if (opening && !rooted) {
+      const dx = opening.x - unit.x, dz = opening.z - unit.z;
+      const distance = Math.hypot(dx, dz);
+      if (distance > .04) {
+        if (spec.rectangle) turnRectangle(unit, heading);
+        const fraction = Math.min(1, spec.moveSpeed * tick / distance);
+        unit.vx = dx * fraction;
+        unit.vz = dz * fraction;
+        continue;
+      }
+    }
+    if (spec.rectangle) {
       if (!rooted && spec.breakthrough && range2 <= 16 && steerBreakthrough(unit, spec, living, heading)) continue;
       turnRectangle(unit, heading);
     }
@@ -608,10 +644,10 @@ function resolveRectangleContact(a, b, hit) {
     const aPushes = sa.contactPushSpeed && a.vx * hit.x + a.vz * hit.z > 1e-8;
     const bPushes = sb.contactPushSpeed && b.vx * hit.x + b.vz * hit.z < -1e-8;
     if (aPushes && !bPushes) {
-      bShare = Math.min(hit.depth, sa.contactPushSpeed * (sb.rootOnMeleeHit ? .25 : 1) * tick / 3);
+      bShare = Math.min(hit.depth, sa.contactPushSpeed * knockbackFactor(sb) * tick / 3);
       aShare = hit.depth - bShare;
     } else if (bPushes && !aPushes) {
-      aShare = Math.min(hit.depth, sb.contactPushSpeed * (sa.rootOnMeleeHit ? .25 : 1) * tick / 3);
+      aShare = Math.min(hit.depth, sb.contactPushSpeed * knockbackFactor(sa) * tick / 3);
       bShare = hit.depth - aShare;
     }
   }
@@ -841,6 +877,74 @@ function applyMeleeHit(attacker, target, spec, damage) {
   const duration = unitTypes[target.type].rootOnMeleeHit;
   if (duration) attacker.rootedUntil = Math.max(attacker.rootedUntil ?? 0, state.elapsed + duration);
 }
+function knockbackFactor(spec) {
+  return spec.rootOnMeleeHit ? .25 : 1;
+}
+function planBreachShove(target, neighbors, angle, limit, force) {
+  const steps = Math.ceil(limit / .075);
+  const stride = limit / steps;
+  const dx = Math.sin(angle) * stride, dz = Math.cos(angle) * stride;
+  const positions = new Map();
+  let distance = 0;
+  for (let step = 0; step < steps; step++) {
+    const chain = new Set([target]);
+    const touched = new Set(positions.keys());
+    touched.add(target);
+    const next = new Map();
+    for (const unit of chain) {
+      const start = positions.get(unit) ?? unit;
+      const probe = {type: unit.type, heading: facingOf(unit), x: start.x + dx, z: start.z + dz};
+      const spec = unitTypes[unit.type];
+      const frame = spec.rectangle ? rectangleFrame(probe, spec) : null;
+      const extentX = frame ? projectedHalfSize(frame, 1, 0) : spec.radius;
+      const extentZ = frame ? projectedHalfSize(frame, 0, 1) : spec.radius;
+      if (!onMap({x: Math.abs(probe.x) + extentX, z: Math.abs(probe.z) + extentZ})
+          || distance2(probe, unit) > (force * knockbackFactor(spec) + 1e-8) ** 2) {
+        return {distance, positions};
+      }
+      next.set(unit, probe);
+      for (const other of neighbors) {
+        if (chain.has(other) || !bodiesTooClose(probe, positions.get(other) ?? other)) continue;
+        if (other.team !== target.team || (!touched.has(other) && touched.size === breachShoveLimit)) {
+          return {distance, positions};
+        }
+        chain.add(other);
+        touched.add(other);
+      }
+    }
+    // Commit only complete increments so a blocked body cannot open an overlap.
+    for (const [unit, probe] of next) positions.set(unit, probe);
+    distance = stride * (step + 1);
+  }
+  return {distance, positions};
+}
+function applyBreachShove(attacker, target, living) {
+  const force = unitTypes[attacker.type].attackPush;
+  const targetSpec = unitTypes[target.type];
+  const limit = force * knockbackFactor(targetSpec);
+  const heading = attacker.aimX || attacker.aimZ
+    ? Math.atan2(attacker.aimX, attacker.aimZ) : facingOf(attacker);
+  const reach = targetSpec.radius + (2 * breachShoveLimit - 1) * maxUnitRadius + limit;
+  const neighbors = living.filter(other => other !== target && other.hp > 0 && distance2(target, other) <= reach ** 2);
+  const {x, z} = target;
+  const offset = (attacker.id % 2 ? -1 : 1) * Math.PI / 3;
+  let shove = planBreachShove(target, neighbors, heading + offset, limit, force);
+  if (shove.distance < limit - 1e-8 || shove.positions.size > 1) {
+    const opposite = planBreachShove(target, neighbors, heading - offset, limit, force);
+    if (opposite.distance > shove.distance + 1e-8 || (opposite.distance === shove.distance
+        && opposite.positions.size < shove.positions.size)) shove = opposite;
+  }
+  if (!shove.distance) return;
+  for (const [unit, probe] of shove.positions) {
+    unit.x = probe.x;
+    unit.z = probe.z;
+  }
+  if (attacker.hp > 0 && !(attacker.rootedUntil > state.elapsed)) {
+    const dx = Math.sin(heading), dz = Math.cos(heading);
+    attacker.breachOpening = {x: x + dx * .85, z: z + dz * .85, dx, dz,
+      startX: attacker.x, startZ: attacker.z, until: state.elapsed + .72};
+  }
+}
 function sweepAttack(unit, spec, living, damage) {
   const hits = [];
   const range2 = spec.attackRange ** 2;
@@ -915,7 +1019,7 @@ function simulate() {
   const damage = new Float32Array(state.units.length);
   advanceProjectiles(living, damage);
   advanceWaves(living, damage);
-  let densityCounts;
+  let densityCounts, shoves;
   for (const unit of living) {
     unit.cooldown = Math.max(0, unit.cooldown - tick);
     if (unit.cooldown > 1e-8) continue;
@@ -953,6 +1057,7 @@ function simulate() {
         if (spec.breakthrough) {
           const second = closestEnemy(unit, living, spec, target).target;
           if (second) applyMeleeHit(unit, second, spec, damage);
+          (shoves ??= []).push({attacker: unit, target});
         }
       }
     }
@@ -964,6 +1069,11 @@ function simulate() {
     if (unit.hp === 0) {
       unit.fade = .23;
       state.alive[unit.team]--;
+    }
+  }
+  if (shoves) {
+    for (const {attacker, target} of shoves) {
+      if (target.hp > 0) applyBreachShove(attacker, target, living);
     }
   }
   const tenths = Math.floor(state.elapsed * 10);
