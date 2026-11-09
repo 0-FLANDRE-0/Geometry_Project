@@ -92,9 +92,10 @@ button:disabled { opacity: .37; cursor: default; }
 @media (orientation: landscape) and (max-width: 950px) {
   .controls { max-width: 178px; }
   .bar { display: grid; width: 178px; }
-  .unit-picker { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); }
-  .unit-picker .btn { grid-column: span 2; padding-inline: 0; font-size: 11px; }
-  .unit-picker svg { display: none; }
+  .unit-picker { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); }
+  .unit-picker .btn { grid-column: span 3; padding-inline: 0; font-size: 11px; }
+  .unit-picker .btn:nth-child(n+5) { grid-column: span 4; }
+  .unit-picker [aria-hidden="true"] { display: none; }
   .field { display: flex; align-items: center; justify-content: space-between; }
   .stepper button { width: 37px; }
   .stepper input { width: 39px; }
@@ -138,12 +139,13 @@ button:disabled { opacity: .37; cursor: default; }
     <div class="hint" id="hint" aria-live="polite"></div>
     <div class="bar" id="deploy-bar">
       <div class="unit-picker" role="group" aria-label="배치할 유닛">
-        <button class="btn" id="unit-circle" type="button" aria-pressed="true">● 원</button>
-        <button class="btn" id="unit-triangle" type="button" aria-pressed="false">▲ 삼각형</button>
-        <button class="btn" id="unit-square" type="button" aria-pressed="false">■ 사각형</button>
-        <button class="btn" id="unit-diamond" type="button" aria-pressed="false">◆ 마름모</button>
+        <button class="btn" id="unit-circle" type="button" aria-pressed="true"><span aria-hidden="true">●</span> 원</button>
+        <button class="btn" id="unit-triangle" type="button" aria-pressed="false"><span aria-hidden="true">▲</span> 삼각형</button>
+        <button class="btn" id="unit-square" type="button" aria-pressed="false"><span aria-hidden="true">■</span> 사각형</button>
+        <button class="btn" id="unit-diamond" type="button" aria-pressed="false"><span aria-hidden="true">◆</span> 마름모</button>
         <button class="btn" id="unit-trapezoid" type="button" aria-pressed="false"><svg width="11" height="9" viewBox="0 0 12 10" aria-hidden="true"><path fill="currentColor" d="M2 0h8l2 10H0z"/></svg> 사다리꼴</button>
-        <button class="btn" id="unit-hexagon" type="button" aria-pressed="false">⬢ 육각형</button>
+        <button class="btn" id="unit-hexagon" type="button" aria-pressed="false"><span aria-hidden="true">⬢</span> 육각형</button>
+        <button class="btn" id="unit-pentagon" type="button" aria-pressed="false"><span aria-hidden="true">⬟</span> 오각형</button>
       </div>
       <div class="field">
         <label class="field-name" for="count">대형 인원</label>
@@ -181,6 +183,7 @@ button:disabled { opacity: .37; cursor: default; }
 const byId = id => document.getElementById(id);
 const ui = Object.fromEntries([
   'arena', 'marks', 'hint', 'unit-circle', 'unit-triangle', 'unit-square', 'unit-diamond', 'unit-trapezoid', 'unit-hexagon',
+  'unit-pentagon',
   'count', 'count-down', 'count-up', 'rows', 'rows-down', 'rows-up', 'undo', 'place',
   'start', 'deploy-bar', 'battle-bar', 'back', 'clock', 'result', 'verdict', 'summary', 'error',
   'zoom-out', 'zoom-in', 'view-reset', 'fullscreen', 'screen-notice'
@@ -198,15 +201,19 @@ const diamond = Object.freeze({ hp: 135, damage: 125, defense: 0, penetration: 0
 const trapezoid = Object.freeze({ hp: 180, damage: 52, defense: .15, penetration: .05,
   radius: circle.radius, width: 1.25, length: 1, moveSpeed: 2.5, attackGap: .90,
   attackRange: 3.25, approachRange: 1.5, attackHalfAngle: Math.PI / 3, maxTargets: 3 });
-const hexagon = Object.freeze({ hp: 250, damage: 105, defense: .05, penetration: .15,
+const hexagon = Object.freeze({ hp: 280, damage: 105, defense: .05, penetration: .15,
   radius: 2.15 / 2, moveSpeed: 1.85, attackGap: 3.8, attackRange: 32.5, projectileSpeed: 8.2,
   scatterRadius: 6, blastRadius: 1.8, coreRadius: 1.25, edgeDamage: 60, edgePenetration: .05 });
-const unitTypes = Object.freeze({circle, triangle, square, diamond, trapezoid, hexagon});
+const pentagon = Object.freeze({ hp: 450, damage: 380, defense: .55, penetration: .65,
+  radius: 1.85 / 2, moveSpeed: 1.45, attackGap: 3.5, attackRange: 18, approachRange: 4,
+  hitscan: true, splashRadius: .8, splashDamage: 55 });
+const unitTypes = Object.freeze({circle, triangle, square, diamond, trapezoid, hexagon, pentagon});
 const trapezoidCorners = [[-.68, 1], [.68, 1], [1, -1], [-1, -1]];
 const projectileRadius = .16;
 const shellRadius = .24;
 const shellTrailLength = 1.65;
 const impactDuration = .48;
+const hitscanTraceDuration = .18;
 const arena = { x: 35, z: 35 };
 const deploy = {type: 'circle', count: 10, rows: 2, anchor: null, groups: [], units: [], ready: false, preview: null};
 const state = {phase: 'deploy', elapsed: 0, clockTenths: -1, units: [], projectiles: [], impacts: [], alive: [0, 0]};
@@ -361,7 +368,7 @@ function damageAgainst(attack, target) {
   return attack.damage * (1 - unitTypes[target.type].defense * (1 - attack.penetration));
 }
 function attackReach(spec, targetRadius) {
-  if (spec.projectileSpeed || spec.attackHalfAngle) return spec.attackRange;
+  if (spec.projectileSpeed || spec.attackHalfAngle || spec.hitscan) return spec.attackRange;
   return spec.attackRange + (targetRadius - circle.radius);
 }
 function closestEnemy(unit, living, attack = null) {
@@ -377,18 +384,19 @@ function closestEnemy(unit, living, attack = null) {
   }
   return {target: best, range2};
 }
-function lowestMaxHpEnemyWithin(unit, living, limit2, attack = null) {
-  let best = null, range2 = Infinity, maxHp = Infinity;
+function enemyByMaxHpWithin(unit, living, limit2, attack = null, preferHighHp = false) {
+  let best = null, range2 = Infinity, bestScore = -Infinity;
+  const direction = preferHighHp ? 1 : -1;
   if (attack) limit2 = Math.min(limit2, attackReach(attack, maxUnitRadius) ** 2);
   for (const target of living) {
     if (target.team === unit.team) continue;
     const d2 = distance2(unit, target);
     if (d2 > limit2 || (attack && d2 > attackReach(attack, unitTypes[target.type].radius) ** 2)) continue;
-    const hp = unitTypes[target.type].hp;
-    if (hp < maxHp || (hp === maxHp && d2 < range2 - 1e-8)) {
+    const score = unitTypes[target.type].hp * direction;
+    if (score > bestScore || (score === bestScore && d2 < range2 - 1e-8)) {
       best = target;
       range2 = d2;
-      maxHp = hp;
+      bestScore = score;
     }
   }
   return {target: best, range2};
@@ -423,10 +431,10 @@ function moveUnits(living) {
     const nearest = closestEnemy(unit, living);
     if (!nearest.target) continue;
     const {target, range2} = unit.type === 'diamond'
-      ? lowestMaxHpEnemyWithin(unit, living, (Math.sqrt(nearest.range2) + diamondChaseMargin) ** 2)
+      ? enemyByMaxHpWithin(unit, living, (Math.sqrt(nearest.range2) + diamondChaseMargin) ** 2)
       : nearest;
     const spec = unitTypes[unit.type];
-    if (spec.projectileSpeed || spec.attackHalfAngle || unit.type === 'diamond') {
+    if (spec.projectileSpeed || spec.attackHalfAngle || spec.hitscan || unit.type === 'diamond') {
       unit.heading = Math.atan2(target.x - unit.x, target.z - unit.z);
     }
     const targetRadius = unitTypes[target.type].radius;
@@ -526,14 +534,14 @@ function separateUnits(living) {
     }
   }
 }
-function firstProjectileHit(projectile, distance, living) {
+function firstProjectileHit(projectile, distance, living, padding = projectileRadius) {
   let target = null, closest = Infinity;
   for (const unit of living) {
     if (unit.team === projectile.team) continue;
     const dx = unit.x - projectile.x, dz = unit.z - projectile.z;
     const along = dx * projectile.dx + dz * projectile.dz;
     const across = dx * projectile.dz - dz * projectile.dx;
-    const radius = unitTypes[unit.type].radius + projectileRadius;
+    const radius = unitTypes[unit.type].radius + padding;
     const chord2 = radius ** 2 - across ** 2;
     if (chord2 < 0) continue;
     const halfChord = Math.sqrt(chord2);
@@ -544,7 +552,7 @@ function firstProjectileHit(projectile, distance, living) {
       closest = entry;
     }
   }
-  return target;
+  return target && {target, distance: closest};
 }
 
 function deCasteljau(a, b, c, d, t) {
@@ -610,9 +618,9 @@ function advanceProjectiles(living, damage) {
   state.projectiles = state.projectiles.filter(projectile => {
     if (projectile.arc) return advanceShell(projectile, living, damage);
     const distance = Math.min(projectile.remaining, projectile.attack.projectileSpeed * tick);
-    const target = firstProjectileHit(projectile, distance, living);
-    if (target) {
-      damage[target.id] += damageAgainst(projectile.attack, target);
+    const hit = firstProjectileHit(projectile, distance, living);
+    if (hit) {
+      damage[hit.target.id] += damageAgainst(projectile.attack, hit.target);
       return false;
     }
     projectile.x += projectile.dx * distance;
@@ -622,6 +630,29 @@ function advanceProjectiles(living, damage) {
   });
 }
 
+function fireHitscan(unit, aim, spec, living, damage) {
+  const heading = Math.atan2(aim.x - unit.x, aim.z - unit.z);
+  const ray = {x: unit.x, z: unit.z, team: unit.team, dx: Math.sin(heading), dz: Math.cos(heading)};
+  const hit = firstProjectileHit(ray, spec.attackRange, living, 0);
+  if (!hit) return;
+  unit.heading = heading;
+  unit.aimX = -ray.dx;
+  unit.aimZ = -ray.dz;
+  unit.swing = .16;
+  damage[hit.target.id] += damageAgainst(spec, hit.target);
+  const impact = {x: ray.x + ray.dx * hit.distance, z: ray.z + ray.dz * hit.distance};
+  const radius = spec.splashRadius;
+  const radius2 = radius ** 2;
+  const splash = {damage: spec.splashDamage, penetration: 0};
+  for (const target of living) {
+    if (target.team !== unit.team && target !== hit.target && distance2(target, impact) <= radius2) {
+      damage[target.id] += damageAgainst(splash, target);
+    }
+  }
+  const muzzle = Math.min(spec.radius * .84, hit.distance);
+  state.impacts.push({...impact, team: unit.team, radius, remaining: impactDuration,
+    trace: {x: ray.x + ray.dx * muzzle, z: ray.z + ray.dz * muzzle}});
+}
 function sweepAttack(unit, spec, living, damage) {
   const hits = [];
   const range2 = spec.attackRange ** 2;
@@ -653,13 +684,15 @@ function simulate() {
     const spec = unitTypes[unit.type];
     let aim;
     if (spec.blastRadius) aim = densestEnemyWithin(unit, living, spec, densityCounts ??= new Map());
-    else if (unit.type === 'diamond') aim = lowestMaxHpEnemyWithin(unit, living, Infinity, spec);
+    else if (spec.hitscan || unit.type === 'diamond') aim = enemyByMaxHpWithin(unit, living, Infinity, spec, spec.hitscan);
     else aim = closestEnemy(unit, living, spec);
     const {target, range2} = aim;
     if (!target) continue;
     unit.cooldown = spec.attackGap;
     if (spec.blastRadius) {
       launchShell(unit, target, spec);
+    } else if (spec.hitscan) {
+      fireHitscan(unit, target, spec, living, damage);
     } else if (spec.projectileSpeed) {
       const heading = Math.atan2(target.x - unit.x, target.z - unit.z);
       unit.heading = heading;
@@ -972,7 +1005,9 @@ function createThreeScene(three, context) {
     trapezoid: trapezoidGeometry(squareBody),
     'trapezoid-cap': trapezoidGeometry(squareCap),
     hexagon: new three.CylinderGeometry(1, 1, 1, 6).translate(0, .5, 0),
-    'hexagon-cap': new three.CircleGeometry(1, 6, -Math.PI / 2).rotateX(-Math.PI / 2)
+    'hexagon-cap': new three.CircleGeometry(1, 6, -Math.PI / 2).rotateX(-Math.PI / 2),
+    pentagon: new three.CylinderGeometry(1, 1, 1, 5).translate(0, .5, 0),
+    'pentagon-cap': new three.CircleGeometry(1, 5, -Math.PI / 2).rotateX(-Math.PI / 2)
   };
   // Reuse the same meshes and materials as primitives move between frames.
   const pools = new Map();
@@ -1068,8 +1103,9 @@ function createCanvasScene(ctx) {
       const isDiamond = shape === 'diamond' || shape === 'diamond-cap';
       const isTrapezoid = shape === 'trapezoid' || shape === 'trapezoid-cap';
       const isHexagon = shape === 'hexagon' || shape === 'hexagon-cap';
-      if (isHexagon || isTrapezoid || isSquare || isDiamond || shape === 'triangle' || shape === 'triangle-cap') {
-        const sides = isHexagon ? 6 : (isTrapezoid || isSquare || isDiamond ? 4 : 3);
+      const isPentagon = shape === 'pentagon' || shape === 'pentagon-cap';
+      if (isPentagon || isHexagon || isTrapezoid || isSquare || isDiamond || shape === 'triangle' || shape === 'triangle-cap') {
+        const sides = isHexagon ? 6 : isPentagon ? 5 : (isTrapezoid || isSquare || isDiamond ? 4 : 3);
         const firstCorner = isSquare ? Math.PI / 4 : 0;
         const sinHeading = Math.sin(heading), cosHeading = Math.cos(heading);
         const corners = Array.from({length: sides}, (_, i) => {
@@ -1282,11 +1318,74 @@ function drawShellImpact(ctx, impact) {
   }
   ctx.globalAlpha = 1;
 }
+function drawShotFlash(ctx, point, dx, dy, length, width) {
+  fillPolygon(ctx, [
+    {x: point.x + dx * length, y: point.y + dy * length},
+    {x: point.x - dy * width, y: point.y + dx * width},
+    {x: point.x - dx * length * .42, y: point.y - dy * length * .42},
+    {x: point.x + dy * width, y: point.y - dx * width}
+  ]);
+}
+function drawHitscanEffect(ctx, impact) {
+  const age = impactDuration - impact.remaining;
+  const sparks = Math.max(0, 1 - age / .27);
+  if (!sparks) return;
+  const from = project(impact.trace.x, .36, impact.trace.z);
+  const to = project(impact.x, .36, impact.z);
+  const span = Math.hypot(to.x - from.x, to.y - from.y);
+  const dx = span > .001 ? (to.x - from.x) / span : 1;
+  const dy = span > .001 ? (to.y - from.y) / span : 0;
+  const size = clamp(camera.scale * 1.1, 5, 13);
+  const accent = impact.team === 0 ? '#69f3ce' : '#ff9c69';
+  const trace = Math.max(0, 1 - age / hitscanTraceDuration);
+  if (trace && span > .001) {
+    ctx.beginPath();
+    ctx.moveTo(lerp(to.x, from.x, trace), lerp(to.y, from.y, trace));
+    ctx.lineTo(to.x, to.y);
+    ctx.strokeStyle = accent;
+    ctx.globalAlpha = trace * .48;
+    ctx.lineWidth = 1.5 + trace * 3.6;
+    ctx.stroke();
+    ctx.strokeStyle = '#fff5d5';
+    ctx.globalAlpha = trace ** 2 * .96;
+    ctx.lineWidth = .75 + trace * 1.35;
+    ctx.stroke();
+  }
+  const flash = Math.max(0, 1 - age / .10);
+  if (flash) {
+    ctx.fillStyle = accent;
+    ctx.globalAlpha = flash * .76;
+    drawShotFlash(ctx, from, dx, dy, size * 1.45, size * .48);
+    ctx.fillStyle = '#fff5d5';
+    ctx.globalAlpha = flash;
+    drawShotFlash(ctx, from, dx, dy, size * .98, size * .26);
+    drawShotFlash(ctx, to, -dx, -dy, size, size * .38);
+  }
+  const reach = size * lerp(.35, 1.9, 1 - sparks);
+  const tail = lerp(.84, .38, sparks);
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const side = (i - 2.5) / 2.5;
+    const forward = i % 2 ? -.30 : .58;
+    const px = (dx * forward - dy * side) * reach;
+    const py = (dy * forward + dx * side) * reach;
+    ctx.moveTo(to.x + px * tail, to.y + py * tail);
+    ctx.lineTo(to.x + px, to.y + py);
+  }
+  ctx.strokeStyle = '#fff5d5';
+  ctx.globalAlpha = sparks * .88;
+  ctx.lineWidth = 1.45;
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
 function drawMarks(ctx, units, preview, valid, projectiles) {
   ctx.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
   ctx.clearRect(0, 0, camera.w, camera.h);
   ctx.textAlign = 'center';
-  for (const impact of state.impacts) drawShellImpact(ctx, impact);
+  for (const impact of state.impacts) {
+    drawShellImpact(ctx, impact);
+    if (impact.trace) drawHitscanEffect(ctx, impact);
+  }
   for (const unit of units) {
     const spec = unitTypes[unit.type];
     if (!spec.attackHalfAngle || !unit.swing) continue;
@@ -1314,6 +1413,7 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
         else if (model.type === 'diamond') polygonMark(ctx, model, .4, radius * diamond.length, 4, diamond.width / diamond.length);
         else if (model.type === 'trapezoid') polygonMark(ctx, model, .4, radius, 4, trapezoid.width);
         else if (model.type === 'hexagon') polygonMark(ctx, model, .4, radius * hexagon.radius / circle.radius, 6);
+        else if (model.type === 'pentagon') polygonMark(ctx, model, .4, radius * pentagon.radius / circle.radius, 5);
         else {
           ctx.beginPath();
           ctx.arc(point.x, point.y, radius, 0, 2 * Math.PI);
