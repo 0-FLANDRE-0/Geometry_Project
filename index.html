@@ -199,8 +199,8 @@ const trapezoid = Object.freeze({ hp: 180, damage: 52, defense: .15, penetration
   radius: circle.radius, width: 1.25, length: 1, moveSpeed: 2.5, attackGap: .90,
   attackRange: 3.25, approachRange: 1.5, attackHalfAngle: Math.PI / 3, maxTargets: 3 });
 const hexagon = Object.freeze({ hp: 250, damage: 105, defense: .05, penetration: .15,
-  radius: 2.15 / 2, moveSpeed: 1.85, attackGap: 3.8, attackRange: 32.5, projectileSpeed: 5.62,
-  scatterRadius: 6, blastRadius: 2.5, coreRadius: 1, edgeDamage: 60, edgePenetration: .05 });
+  radius: 2.15 / 2, moveSpeed: 1.85, attackGap: 3.8, attackRange: 32.5, projectileSpeed: 6.85,
+  scatterRadius: 6, blastRadius: 1.8, coreRadius: .85, edgeDamage: 60, edgePenetration: .05 });
 const unitTypes = Object.freeze({circle, triangle, square, diamond, trapezoid, hexagon});
 const trapezoidCorners = [[-.68, 1], [.68, 1], [1, -1], [-1, -1]];
 const projectileRadius = .16;
@@ -352,19 +352,24 @@ ui.back.addEventListener('click', () => {
 
 const tick = 1 / 60;
 const diamondChaseMargin = 3;
+const maxUnitRadius = Math.max(...Object.values(unitTypes).map(spec => spec.radius));
+const collisionCellSize = 2 * maxUnitRadius;
+const collisionCols = Math.ceil(2 * arena.x / collisionCellSize);
+const collisionRows = Math.ceil(2 * arena.z / collisionCellSize);
 function damageAgainst(attack, target) {
   return attack.damage * (1 - unitTypes[target.type].defense * (1 - attack.penetration));
 }
-function attackReach(spec, target) {
+function attackReach(spec, targetRadius) {
   if (spec.projectileSpeed || spec.attackHalfAngle) return spec.attackRange;
-  return spec.attackRange + (unitTypes[target.type].radius - circle.radius);
+  return spec.attackRange + (targetRadius - circle.radius);
 }
 function closestEnemy(unit, living, attack = null) {
   let best = null, range2 = Infinity;
+  const limit2 = attack ? attackReach(attack, maxUnitRadius) ** 2 : Infinity;
   for (const target of living) {
     if (target.team === unit.team) continue;
     const d2 = distance2(unit, target);
-    if (d2 < range2 - 1e-8 && (!attack || d2 <= attackReach(attack, target) ** 2)) {
+    if (d2 <= limit2 && d2 < range2 - 1e-8 && (!attack || d2 <= attackReach(attack, unitTypes[target.type].radius) ** 2)) {
       best = target;
       range2 = d2;
     }
@@ -373,10 +378,11 @@ function closestEnemy(unit, living, attack = null) {
 }
 function lowestMaxHpEnemyWithin(unit, living, limit2, attack = null) {
   let best = null, range2 = Infinity, maxHp = Infinity;
+  if (attack) limit2 = Math.min(limit2, attackReach(attack, maxUnitRadius) ** 2);
   for (const target of living) {
     if (target.team === unit.team) continue;
     const d2 = distance2(unit, target);
-    if (d2 > limit2 || (attack && d2 > attackReach(attack, target) ** 2)) continue;
+    if (d2 > limit2 || (attack && d2 > attackReach(attack, unitTypes[target.type].radius) ** 2)) continue;
     const hp = unitTypes[target.type].hp;
     if (hp < maxHp || (hp === maxHp && d2 < range2 - 1e-8)) {
       best = target;
@@ -422,18 +428,22 @@ function moveUnits(living) {
     if (spec.projectileSpeed || spec.attackHalfAngle || unit.type === 'diamond') {
       unit.heading = Math.atan2(target.x - unit.x, target.z - unit.z);
     }
-    const contact = spec.radius + unitTypes[target.type].radius;
+    const targetRadius = unitTypes[target.type].radius;
+    const contact = spec.radius + targetRadius;
     const approachRange = spec.approachRange === undefined
-      ? attackReach(spec, target)
+      ? attackReach(spec, targetRadius)
       : Math.max(spec.approachRange, contact);
     if (range2 <= approachRange ** 2) continue;
     const range = Math.sqrt(range2);
     let dx = (target.x - unit.x) / range;
     let dz = (target.z - unit.z) / range;
     let forward = Infinity, side = 0;
+    const maxSeparation = spec.radius + maxUnitRadius;
+    const search2 = (maxSeparation + .42) ** 2 + (maxSeparation * .88) ** 2 + 1e-8;
     for (const other of living) {
       if (other.team !== unit.team || unit === other) continue;
       const rx = other.x - unit.x, rz = other.z - unit.z;
+      if (rx * rx + rz * rz > search2) continue;
       const along = rx * dx + rz * dz;
       const lateral = -rx * dz + rz * dx;
       const separation = spec.radius + unitTypes[other.type].radius;
@@ -450,24 +460,66 @@ function moveUnits(living) {
     if (unit.type === 'diamond') unit.heading = Math.atan2(unit.vx, unit.vz);
   }
   for (const unit of living) { unit.x += unit.vx; unit.z += unit.vz; }
+  separateUnits(living);
+}
+function separateUnits(living) {
+  const cells = new Array(collisionCols * collisionRows);
+  const locations = new Int32Array(living.length);
+  const radii = living.map(unit => unitTypes[unit.type].radius);
+  const candidates = [];
+  const byIndex = (a, b) => a - b;
+  function updateCell(i) {
+    const unit = living[i];
+    const x = clamp(Math.floor((unit.x + arena.x) / collisionCellSize), 0, collisionCols - 1);
+    const z = clamp(Math.floor((unit.z + arena.z) / collisionCellSize), 0, collisionRows - 1);
+    const cell = z * collisionCols + x;
+    const previous = locations[i];
+    if (cell === previous) return;
+    if (previous >= 0) cells[previous].delete(i);
+    (cells[cell] ??= new Set()).add(i);
+    locations[i] = cell;
+  }
   for (let pass = 0; pass < 3; pass++) {
+    cells.fill(undefined);
+    locations.fill(-1);
+    for (let i = 0; i < living.length; i++) updateCell(i);
     for (let i = 0; i < living.length; i++) {
       const a = living[i];
-      for (let j = i + 1; j < living.length; j++) {
-        const b = living[j];
-        const dx = b.x - a.x, dz = b.z - a.z;
-        const d2 = dx * dx + dz * dz;
-        const contact = unitTypes[a.type].radius + unitTypes[b.type].radius;
-        if (d2 >= contact * contact) continue;
-        const distance = Math.sqrt(d2);
-        const amount = (contact - distance) * .5;
-        const sx = distance > 1e-8 ? dx / distance * amount : amount;
-        const sz = distance > 1e-8 ? dz / distance * amount : 0;
-        a.x -= sx; a.z -= sz; b.x += sx; b.z += sz;
-      }
+      let after = i, cell;
+      do {
+        cell = locations[i];
+        const col = cell % collisionCols, row = Math.floor(cell / collisionCols);
+        candidates.length = 0;
+        for (let z = Math.max(0, row - 1); z <= Math.min(row + 1, collisionRows - 1); z++) {
+          for (let x = Math.max(0, col - 1); x <= Math.min(col + 1, collisionCols - 1); x++) {
+            const neighbors = cells[z * collisionCols + x];
+            if (neighbors) for (const j of neighbors) if (j > after) candidates.push(j);
+          }
+        }
+        // Keep the original pair order, including neighbors reached after a collision moves this unit.
+        candidates.sort(byIndex);
+        for (const j of candidates) {
+          const b = living[j];
+          const dx = b.x - a.x, dz = b.z - a.z;
+          const d2 = dx * dx + dz * dz;
+          const contact = radii[i] + radii[j];
+          if (d2 >= contact * contact) continue;
+          const distance = Math.sqrt(d2);
+          const amount = (contact - distance) * .5;
+          const sx = distance > 1e-8 ? dx / distance * amount : amount;
+          const sz = distance > 1e-8 ? dz / distance * amount : 0;
+          a.x -= sx; a.z -= sz; b.x += sx; b.z += sz;
+          updateCell(j);
+          updateCell(i);
+          if (locations[i] !== cell) {
+            after = j;
+            break;
+          }
+        }
+      } while (locations[i] !== cell);
     }
-    for (const u of living) {
-      const radius = unitTypes[u.type].radius;
+    for (let i = 0; i < living.length; i++) {
+      const u = living[i], radius = radii[i];
       u.x = clamp(u.x, -arena.x + radius, arena.x - radius);
       u.z = clamp(u.z, -arena.z + radius, arena.z - radius);
     }
