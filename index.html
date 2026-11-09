@@ -461,6 +461,7 @@ function simulate() {
 }
 
 const overhead = Math.PI / 2;
+const minPitch = 65 * Math.PI / 180;
 const maxZoom = 10;
 const camera = {
   w: 1, h: 1, dpr: 1, scale: 1, centerY: 0, yaw: 0, pitch: overhead, zoom: 1,
@@ -477,7 +478,8 @@ function updateCamera() {
   const boardWidth = width * c + depth * s;
   const boardDepth = width * s + depth * c;
   const gutter = camera.w >= 575 ? 178 : 24;
-  const fit = Math.min((camera.w - gutter) / boardWidth, (camera.h - 18) / (boardDepth * camera.sin + 1));
+  // Fit the overhead footprint so tilting does not change the zoom.
+  const fit = Math.min((camera.w - gutter) / boardWidth, (camera.h - 18) / (boardDepth + 1));
   camera.scale = Math.max(.01, fit) * camera.zoom;
   ui['zoom-out'].disabled = camera.zoom <= .65;
   ui['zoom-in'].disabled = camera.zoom >= maxZoom;
@@ -486,7 +488,7 @@ function updateCamera() {
 function turnCamera(dx, dy, zoomFactor = 1, focus = null) {
   const pivot = focus && groundPoint(focus.x, focus.y);
   camera.yaw = (camera.yaw - dx * .012) % (2 * Math.PI);
-  camera.pitch = clamp(camera.pitch + dy * .007, .35, overhead);
+  camera.pitch = clamp(camera.pitch + dy * .0035, minPitch, overhead);
   camera.zoom = clamp(camera.zoom * zoomFactor, .65, maxZoom);
   updateCamera();
   if (pivot) {
