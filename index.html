@@ -179,7 +179,7 @@ const ui = Object.fromEntries([
 const circle = Object.freeze({ hp: 200, damage: 75, defense: .10, penetration: 0,
   radius: .5, moveSpeed: 3.06, attackGap: .82, attackRange: 1.0625 });
 const triangle = Object.freeze({ hp: 120, damage: 100, defense: 0, penetration: .10,
-  radius: circle.radius, moveSpeed: circle.moveSpeed, attackGap: .98, attackRange: 10,
+  radius: circle.radius, moveSpeed: circle.moveSpeed, attackGap: 1.2, attackRange: 10,
   projectileSpeed: circle.moveSpeed * 2 });
 const unitTypes = Object.freeze({circle, triangle});
 const projectileRadius = .16;
