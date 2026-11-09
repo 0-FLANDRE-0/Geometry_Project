@@ -504,23 +504,35 @@ function densestEnemyWithin(unit, living, spec, counts) {
   }
   return {target: best, range2};
 }
-function steerBreakthrough(unit, spec, living) {
+function turnRectangle(unit, targetHeading) {
+  const heading = facingOf(unit);
+  const offset = targetHeading - heading;
+  const turn = Math.atan2(Math.sin(offset), Math.cos(offset));
+  const maxStep = Math.PI * 3 * tick;
+  unit.heading = Math.abs(turn) <= maxStep ? targetHeading : heading + Math.sign(turn) * maxStep;
+}
+function steerBreakthrough(unit, spec, living, targetHeading) {
   const sign = unit.team === 0 ? -1 : 1;
   const ahead = living.some(other => other.team !== unit.team && (other.z - unit.z) * sign > .25
     && Math.abs(other.x - unit.x) <= 3 && distance2(unit, other) <= 25);
   if (!ahead) return false;
 
   const forward = teamHeading(unit), side = unit.id % 2 ? -1 : 1;
-  let heading = forward;
+  let heading = forward, facing = targetHeading;
   for (const offset of breachAngles) {
     const angle = forward + offset * side;
     const dx = Math.sin(angle), dz = Math.cos(angle);
     const probe = {type: unit.type, team: unit.team, heading: angle, x: unit.x + dx * .72, z: unit.z + dz * .72};
     if (!onMap(probe)) continue;
     const blocked = living.some(other => other !== unit && bodiesTooClose(probe, other, .01));
-    if (!blocked) { heading = angle; break; }
+    if (blocked) continue;
+    heading = angle;
+    // Keep looking at the enemy when the opening fits the rotated body.
+    probe.heading = targetHeading;
+    if (living.some(other => other !== unit && bodiesTooClose(probe, other, .01))) facing = angle;
+    break;
   }
-  unit.heading = heading;
+  turnRectangle(unit, facing);
   unit.vx = Math.sin(heading) * spec.moveSpeed * tick;
   unit.vz = Math.cos(heading) * spec.moveSpeed * tick;
   return true;
@@ -528,14 +540,26 @@ function steerBreakthrough(unit, spec, living) {
 function moveUnits(living) {
   for (const unit of living) {
     unit.vx = unit.vz = 0;
-    if (unit.rootedUntil > state.elapsed + 1e-8) continue;
+    const spec = unitTypes[unit.type];
+    const rooted = unit.rootedUntil > state.elapsed + 1e-8;
+    if (rooted && !spec.rectangle) continue;
     const nearest = closestEnemy(unit, living);
     if (!nearest.target) continue;
     const {target, range2} = unit.type === 'diamond'
       ? enemyByMaxHpWithin(unit, living, (Math.sqrt(nearest.range2) + diamondChaseMargin) ** 2)
       : nearest;
-    const spec = unitTypes[unit.type];
-    if (spec.breakthrough && range2 <= 16 && steerBreakthrough(unit, spec, living)) continue;
+    if (spec.rectangle) {
+      const attackTarget = range2 <= attackReach(spec, maxUnitRadius) ** 2 && !attackInRange(unit, target, spec, range2)
+        ? closestEnemy(unit, living, spec).target
+        : null;
+      const focus = attackTarget ?? target;
+      const heading = focus.x === unit.x && focus.z === unit.z
+        ? facingOf(unit)
+        : Math.atan2(focus.x - unit.x, focus.z - unit.z);
+      if (!rooted && spec.breakthrough && range2 <= 16 && steerBreakthrough(unit, spec, living, heading)) continue;
+      turnRectangle(unit, heading);
+    }
+    if (rooted) continue;
     if (spec.projectileSpeed || spec.attackHalfAngle || spec.hitscan || unit.type === 'diamond') {
       unit.heading = Math.atan2(target.x - unit.x, target.z - unit.z);
     }
@@ -572,7 +596,7 @@ function moveUnits(living) {
     const step = Math.min(spec.moveSpeed * tick, range - stopRange) / Math.hypot(dx, dz);
     unit.vx = dx * step;
     unit.vz = dz * step;
-    if (unit.type === 'diamond' || spec.breakthrough) unit.heading = Math.atan2(unit.vx, unit.vz);
+    if (unit.type === 'diamond') unit.heading = Math.atan2(unit.vx, unit.vz);
   }
   for (const unit of living) { unit.x += unit.vx; unit.z += unit.vz; }
   separateUnits(living);
