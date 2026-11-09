@@ -59,6 +59,9 @@ button:disabled { opacity: .37; cursor: default; }
   background: #101d20ee; border: 1px solid #334647; border-radius: 8px;
   box-shadow: 0 4px 14px #03090c70; pointer-events: auto;
 }
+.unit-picker { display: flex; gap: 4px; }
+.unit-picker .btn { flex: 1; }
+.unit-picker .btn[aria-pressed="true"] { color: var(--mint); border-color: #76c8b5; background: #223a38; }
 .field { display: grid; gap: 4px; }
 .field-name { color: #bfceca; font-size: 11px; white-space: nowrap; }
 .stepper { display: flex; align-items: center; min-height: 43px; background: #0d171a; border: 1px solid #334647; border-radius: 6px; }
@@ -96,7 +99,7 @@ button:disabled { opacity: .37; cursor: default; }
 }
 @media (orientation: portrait) and (max-width: 550px) {
   .bar { flex-wrap: wrap; }
-  .actions { flex-basis: 100%; }
+  .unit-picker, .actions { flex-basis: 100%; }
   .actions .btn { flex: 1; }
 }
 </style>
@@ -129,6 +132,10 @@ button:disabled { opacity: .37; cursor: default; }
   <footer class="controls">
     <div class="hint" id="hint" aria-live="polite"></div>
     <div class="bar" id="deploy-bar">
+      <div class="unit-picker" role="group" aria-label="배치할 유닛">
+        <button class="btn" id="unit-circle" type="button" aria-pressed="true">● 원</button>
+        <button class="btn" id="unit-triangle" type="button" aria-pressed="false">▲ 삼각형</button>
+      </div>
       <div class="field">
         <label class="field-name" for="count">대형 인원</label>
         <div class="stepper">
@@ -164,17 +171,22 @@ button:disabled { opacity: .37; cursor: default; }
 'use strict';
 const byId = id => document.getElementById(id);
 const ui = Object.fromEntries([
-  'arena', 'marks', 'hint',
+  'arena', 'marks', 'hint', 'unit-circle', 'unit-triangle',
   'count', 'count-down', 'count-up', 'rows', 'rows-down', 'rows-up', 'undo', 'place',
   'start', 'deploy-bar', 'battle-bar', 'back', 'clock', 'result', 'verdict', 'summary', 'error',
   'zoom-out', 'zoom-in', 'view-reset', 'fullscreen', 'screen-notice'
 ].map(id => [id, byId(id)]));
 const circle = Object.freeze({ hp: 200, damage: 75, defense: .10, penetration: 0,
-  radius: .5, moveSpeed: 3.06, attackGap: .82, reach: .0625 });
+  radius: .5, moveSpeed: 3.06, attackGap: .82, attackRange: 1.0625 });
+const triangle = Object.freeze({ hp: 120, damage: 100, defense: 0, penetration: .10,
+  radius: circle.radius, moveSpeed: circle.moveSpeed, attackGap: .98, attackRange: 5,
+  projectileSpeed: circle.moveSpeed * 1.5 });
+const unitTypes = Object.freeze({circle, triangle});
+const projectileRadius = .16;
 const arena = { x: 35, z: 35 };
 const spacing = 1.5;
-const deploy = {count: 10, rows: 2, anchor: null, groups: [], units: [], ready: false, preview: null};
-const state = {phase: 'deploy', elapsed: 0, clockTenths: -1, units: [], alive: [0, 0]};
+const deploy = {type: 'circle', count: 10, rows: 2, anchor: null, groups: [], units: [], ready: false, preview: null};
+const state = {phase: 'deploy', elapsed: 0, clockTenths: -1, units: [], projectiles: [], alive: [0, 0]};
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(n, hi));
 const distance2 = (a, b) => (a.x - b.x) ** 2 + (a.z - b.z) ** 2;
 let needsPaint = true;
@@ -183,7 +195,7 @@ function onMap({x,z}) {
   return Math.abs(x) <= arena.x && Math.abs(z) <= arena.z;
 }
 function makePreview() {
-  const {anchor, count, rows} = deploy;
+  const {anchor, count, rows, type} = deploy;
   if (!anchor) return {units: [], team: null, bounds: null, error: ''};
   const team = anchor.z < 0 ? 1 : 0;
   const halfWidth = (Math.ceil(count / rows) - 1) * spacing / 2 + circle.radius;
@@ -202,7 +214,7 @@ function makePreview() {
       units.push({
         x: anchor.x + (col - (cols - 1) / 2) * spacing,
         z: anchor.z + (row - (rows - 1) / 2) * spacing,
-        team
+        team, type
       });
     }
   }
@@ -225,6 +237,9 @@ function updateDeploy() {
   const {units, team, error} = deploy.preview;
   for (const key of ['count', 'rows']) {
     if (document.activeElement !== ui[key]) ui[key].value = deploy[key];
+  }
+  for (const type of Object.keys(unitTypes)) {
+    ui['unit-' + type].setAttribute('aria-pressed', String(deploy.type === type));
   }
   ui['count-down'].disabled = deploy.count <= 1;
   ui['rows-down'].disabled = deploy.rows <= 1;
@@ -261,11 +276,17 @@ for (const key of ['count', 'rows']) {
   ui[key].addEventListener('input', () => setFormationSize(key, ui[key].valueAsNumber));
   ui[key].addEventListener('blur', () => { ui[key].value = deploy[key]; });
 }
+for (const type of Object.keys(unitTypes)) {
+  ui['unit-' + type].addEventListener('click', () => {
+    deploy.type = type;
+    updateDeploy();
+  });
+}
 ui.place.addEventListener('click', () => {
   const {units, team, error} = deploy.preview;
   if (state.phase !== 'deploy' || !units.length || error) return;
-  const {anchor, count, rows} = deploy;
-  deploy.groups.push({anchor, count, rows, units, team});
+  const {anchor, count, rows, type} = deploy;
+  deploy.groups.push({anchor, count, rows, units, team, type});
   deploy.anchor = null;
   rebuildDeployment();
   updateDeploy();
@@ -273,6 +294,7 @@ ui.place.addEventListener('click', () => {
 ui.undo.addEventListener('click', () => {
   const group = deploy.groups.pop();
   if (!group) return;
+  deploy.type = group.type;
   deploy.count = group.count;
   deploy.rows = group.rows;
   deploy.anchor = group.anchor;
@@ -282,8 +304,10 @@ ui.undo.addEventListener('click', () => {
 ui.start.addEventListener('click', () => {
   if (state.phase !== 'deploy' || !deploy.ready) return;
   state.units = deploy.units.map((unit, id) => ({
-    ...unit, id, hp: circle.hp, cooldown: 0, hurt: 0, swing: 0, fade: 0, vx: 0, vz: 0, aimX: 0, aimZ: 0
+    ...unit, id, hp: unitTypes[unit.type].hp, cooldown: 0, hurt: 0, swing: 0, fade: 0,
+    vx: 0, vz: 0, aimX: 0, aimZ: 0, heading: unit.team === 0 ? Math.PI : 0
   }));
+  state.projectiles = [];
   const allies = state.units.filter(unit => unit.team === 0).length;
   state.alive = [allies, state.units.length - allies];
   state.phase = 'battle';
@@ -295,13 +319,15 @@ ui.start.addEventListener('click', () => {
 ui.back.addEventListener('click', () => {
   state.phase = 'deploy';
   state.units = [];
+  state.projectiles = [];
   updatePhase();
 });
 
 const contact = circle.radius * 2;
-const attackDistance2 = (contact + circle.reach) ** 2;
 const tick = 1 / 60;
-const hitDamage = circle.damage * (1 - circle.defense * (1 - circle.penetration));
+function damageAgainst(attack, target) {
+  return attack.damage * (1 - unitTypes[target.type].defense * (1 - attack.penetration));
+}
 function closestEnemy(unit, living) {
   let best = null, range2 = Infinity;
   for (const target of living) {
@@ -315,7 +341,10 @@ function moveUnits(living) {
   for (const unit of living) {
     unit.vx = unit.vz = 0;
     const {target, range2} = closestEnemy(unit, living);
-    if (!target || range2 <= attackDistance2) continue;
+    if (!target) continue;
+    const spec = unitTypes[unit.type];
+    if (spec.projectileSpeed) unit.heading = Math.atan2(target.x - unit.x, target.z - unit.z);
+    if (range2 <= spec.attackRange ** 2) continue;
     const range = Math.sqrt(range2);
     let dx = (target.x - unit.x) / range;
     let dz = (target.z - unit.z) / range;
@@ -331,7 +360,8 @@ function moveUnits(living) {
       }
     }
     if (side) [dx, dz] = [dx - dz * side * .82, dz + dx * side * .82];
-    const step = Math.min(circle.moveSpeed * tick, range - contact) / Math.hypot(dx, dz);
+    const stopRange = spec.projectileSpeed ? spec.attackRange : contact;
+    const step = Math.min(spec.moveSpeed * tick, range - stopRange) / Math.hypot(dx, dz);
     unit.vx = dx * step;
     unit.vz = dz * step;
   }
@@ -357,22 +387,71 @@ function moveUnits(living) {
     }
   }
 }
+function firstProjectileHit(projectile, distance, living) {
+  let target = null, closest = Infinity;
+  for (const unit of living) {
+    if (unit.team === projectile.team) continue;
+    const dx = unit.x - projectile.x, dz = unit.z - projectile.z;
+    const along = dx * projectile.dx + dz * projectile.dz;
+    const across = dx * projectile.dz - dz * projectile.dx;
+    const radius = unitTypes[unit.type].radius + projectileRadius;
+    const chord2 = radius ** 2 - across ** 2;
+    if (chord2 < 0) continue;
+    const halfChord = Math.sqrt(chord2);
+    if (along + halfChord < 0 || along - halfChord > distance) continue;
+    const entry = Math.max(0, along - halfChord);
+    if (entry < closest) {
+      target = unit;
+      closest = entry;
+    }
+  }
+  return target;
+}
+
+function advanceProjectiles(living, damage) {
+  if (!state.projectiles.length) return;
+  state.projectiles = state.projectiles.filter(projectile => {
+    const distance = Math.min(projectile.remaining, projectile.attack.projectileSpeed * tick);
+    const target = firstProjectileHit(projectile, distance, living);
+    if (target) {
+      damage[target.id] += damageAgainst(projectile.attack, target);
+      return false;
+    }
+    projectile.x += projectile.dx * distance;
+    projectile.z += projectile.dz * distance;
+    projectile.remaining -= distance;
+    return projectile.remaining > 1e-8;
+  });
+}
+
 function simulate() {
   state.elapsed += tick;
   const living = state.units.filter(unit => unit.hp > 0);
   moveUnits(living);
   const damage = new Float32Array(state.units.length);
+  advanceProjectiles(living, damage);
   for (const unit of living) {
     unit.cooldown = Math.max(0, unit.cooldown - tick);
     if (unit.cooldown > 1e-8) continue;
+    const spec = unitTypes[unit.type];
     const {target, range2} = closestEnemy(unit, living);
-    if (!target || range2 > attackDistance2) continue;
-    const distance = Math.max(Math.sqrt(range2), .001);
-    unit.aimX = (target.x - unit.x) / distance;
-    unit.aimZ = (target.z - unit.z) / distance;
-    unit.swing = .16;
-    unit.cooldown = circle.attackGap;
-    damage[target.id] += hitDamage;
+    if (!target || range2 > spec.attackRange ** 2) continue;
+    unit.cooldown = spec.attackGap;
+    if (spec.projectileSpeed) {
+      const heading = Math.atan2(target.x - unit.x, target.z - unit.z);
+      unit.heading = heading;
+      state.projectiles.push({
+        x: unit.x, z: unit.z, team: unit.team, heading,
+        dx: Math.sin(heading), dz: Math.cos(heading),
+        remaining: spec.attackRange, attack: spec
+      });
+    } else {
+      const distance = Math.max(Math.sqrt(range2), .001);
+      unit.aimX = (target.x - unit.x) / distance;
+      unit.aimZ = (target.z - unit.z) / distance;
+      unit.swing = .16;
+      damage[target.id] += damageAgainst(spec, target);
+    }
   }
   for (const unit of living) {
     if (!damage[unit.id]) continue;
@@ -389,7 +468,7 @@ function simulate() {
     ui.clock.textContent = (tenths / 10).toFixed(1).padStart(4, '0');
   }
   const [allies, enemies] = state.alive;
-  if (allies && enemies) return;
+  if ((allies && enemies) || state.projectiles.length) return;
   state.phase = 'result';
   ui.verdict.textContent = allies ? '아군 승리' : enemies ? '적군 승리' : '무승부';
   ui.summary.textContent = ui.clock.textContent + '초';
@@ -643,14 +722,16 @@ function createThreeScene(three, context) {
   const geometries = {
     plane: new three.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
     body: new three.CylinderGeometry(1, 1, 1, 28).translate(0, .5, 0),
-    disk: new three.CircleGeometry(1, 28).rotateX(-Math.PI / 2)
+    disk: new three.CircleGeometry(1, 28).rotateX(-Math.PI / 2),
+    triangle: new three.CylinderGeometry(1, 1, 1, 3).translate(0, .5, 0),
+    'triangle-cap': new three.CircleGeometry(1, 3, -Math.PI / 2).rotateX(-Math.PI / 2)
   };
   // Reuse the same meshes and materials as primitives move between frames.
   const pools = new Map();
   return {
     resize() { renderer.setDrawingBufferSize(camera.w, camera.h, camera.dpr); },
     begin() { for (const pool of pools.values()) pool.used = 0; },
-    draw(shape, x, y, z, sx, sy, sz, color, lit = 0) {
+    draw(shape, x, y, z, sx, sy, sz, color, lit = 0, heading = 0) {
       const opacity = color[3] ?? 1;
       const transparent = opacity < 1;
       const key = shape + ':' + lit + ':' + transparent;
@@ -665,7 +746,8 @@ function createThreeScene(three, context) {
       }
       mesh.visible = true;
       mesh.position.set(x, y, z);
-      mesh.scale.set(sx, shape === 'disk' ? 1 : sy, sz);
+      mesh.rotation.y = heading;
+      mesh.scale.set(sx, sy || 1, sz);
       mesh.material.color.setRGB(color[0], color[1], color[2], three.SRGBColorSpace);
       mesh.material.opacity = opacity;
     },
@@ -702,6 +784,14 @@ function createGraphicsScene() {
   return createCanvasScene(fallback);
 }
 
+function fillPolygon(ctx, points) {
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+  ctx.closePath();
+  ctx.fill();
+}
+
 function createCanvasScene(ctx) {
   function rgba(color, shade = 1) {
     const [r, g, b, a = 1] = color;
@@ -716,7 +806,7 @@ function createCanvasScene(ctx) {
       ctx.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
       ctx.clearRect(0, 0, camera.w, camera.h);
     },
-    draw(shape, x, y, z, sx, sy, sz, color, lit = 0) {
+    draw(shape, x, y, z, sx, sy, sz, color, lit = 0, heading = 0) {
       const base = project(x,y,z);
       const rx = sx * camera.scale;
       const rz = sz * camera.scale * camera.sin;
@@ -724,6 +814,25 @@ function createCanvasScene(ctx) {
         ctx.fillStyle = rgba(color);
         groundRectangle(ctx, x - sx / 2, z - sz / 2, x + sx / 2, z + sz / 2, y);
         ctx.fill();
+        return;
+      }
+      if (shape === 'triangle' || shape === 'triangle-cap') {
+        const corners = Array.from({length: 3}, (_, i) => {
+          const angle = heading + i * 2 * Math.PI / 3;
+          return {x: x + sx * Math.sin(angle), z: z + sz * Math.cos(angle)};
+        });
+        const tops = corners.map(p => project(p.x, y + sy, p.z));
+        if (shape === 'triangle') {
+          ctx.fillStyle = rgba(color, lit ? .74 : .85);
+          for (let i = 0; i < corners.length; i++) {
+            const j = (i + 1) % corners.length;
+            const a = corners[i], b = corners[j];
+            const facing = (a.x + b.x - 2 * x) * camera.sinYaw + (a.z + b.z - 2 * z) * camera.cosYaw;
+            if (facing > 0) fillPolygon(ctx, [tops[i], tops[j], project(b.x,y,b.z), project(a.x,y,a.z)]);
+          }
+        }
+        ctx.fillStyle = rgba(color, lit ? .935 : 1);
+        fillPolygon(ctx, tops);
         return;
       }
       const top = project(x,y+sy,z);
@@ -774,37 +883,54 @@ function createRenderer(scene) {
     const life = model.hp === 0 ? model.fade / .23 : 1;
     if (life <= 0) return;
     const color = teams[model.team];
-    const radius = circle.radius * (model.hp === 0 ? .55 + .45 * life : 1);
+    const radius = unitTypes[model.type].radius * (model.hp === 0 ? .55 + .45 * life : 1);
+    const isTriangle = model.type === 'triangle';
+    const body = isTriangle ? 'triangle' : 'body';
+    const capShape = isTriangle ? 'triangle-cap' : 'disk';
+    const heading = model.heading ?? (model.team === 0 ? Math.PI : 0);
     const swing = Math.sin((model.swing || 0) / .16 * Math.PI) * .17;
     const x = model.x + (model.aimX || 0) * swing;
     const z = model.z + (model.aimZ || 0) * swing;
     const height = (.40 + swing * .35) * life;
     if (ghost) {
       const tone = allowed ? color.ghost : [1,.77,.38];
-      draw('body',x,.025,z,radius,height,radius,[...tone,.26],1);
-      draw('body',x,height+.025,z,radius * .91,.052,radius * .91,[...tone,.80],1);
-      draw('disk',x,height+.081,z,radius * .69,0,radius * .69,[.11,.21,.20,.81]);
+      draw(body,x,.025,z,radius,height,radius,[...tone,.26],1,heading);
+      draw(body,x,height+.025,z,radius * .91,.052,radius * .91,[...tone,.80],1,heading);
+      draw(capShape,x,height+.081,z,radius * .69,0,radius * .69,[.11,.21,.20,.81],0,heading);
       return;
     }
-    draw('disk',x+.10,.021,z+.13,radius * 1.16,0,radius * 1.09,[.04,.08,.09,.68 * life]);
-    draw('body',x,.024,z,radius,height,radius,[...color.body,life],1);
-    draw('body',x,height+.024,z,radius * .94,.079*life,radius * .94,[...color.rim,life],1);
+    draw(capShape,x+.10,.021,z+.13,radius * 1.16,0,radius * 1.09,[.04,.08,.09,.68 * life],0,heading);
+    draw(body,x,.024,z,radius,height,radius,[...color.body,life],1,heading);
+    draw(body,x,height+.024,z,radius * .94,.079*life,radius * .94,[...color.rim,life],1,heading);
     const cap = model.hurt > .08 ? [1,.94,.83] : color.cap;
-    draw('disk',x,height+.105*life,z,radius * .72,0,radius * .72,[...cap,life]);
+    draw(capShape,x,height+.105*life,z,radius * .72,0,radius * .72,[...cap,life],0,heading);
   }
   return {
-    render(units, preview, valid) {
+    render(units, preview, valid, projectiles) {
       scene.begin();
       for (const floor of slabs) draw('plane',floor.x,floor.y,floor.z,floor.width,1,floor.depth,floor.color);
       const byDepth = (a, b) => (a.x - b.x) * camera.sinYaw + (a.z - b.z) * camera.cosYaw;
       for (const model of [...units].sort(byDepth)) unit(model);
+      for (const shot of projectiles) {
+        draw('triangle',shot.x,.28,shot.z,projectileRadius,.12,projectileRadius,teams[shot.team].rim,0,shot.heading);
+      }
       for (const model of [...preview].sort(byDepth)) unit(model,true,valid);
       scene.end?.();
     }
   };
 }
 
-function drawMarks(ctx, units, preview, valid) {
+function triangleMark(ctx, model, y, radius) {
+  const point = project(model.x, y, model.z);
+  const heading = (model.heading ?? (model.team === 0 ? Math.PI : 0)) - camera.yaw;
+  const angle = Math.atan2(camera.sin * Math.cos(heading), Math.sin(heading));
+  fillPolygon(ctx, Array.from({length: 3}, (_, i) => {
+    const vertex = angle + i * 2 * Math.PI / 3;
+    return {x: point.x + radius * Math.cos(vertex), y: point.y + radius * Math.sin(vertex)};
+  }));
+}
+
+function drawMarks(ctx, units, preview, valid, projectiles) {
   ctx.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
   ctx.clearRect(0, 0, camera.w, camera.h);
   ctx.textAlign = 'center';
@@ -816,12 +942,21 @@ function drawMarks(ctx, units, preview, valid) {
         if (model.hp === 0) continue;
         const point = project(model.x, .4, model.z);
         ctx.fillStyle = isPreview && !valid ? '#f6d393' : model.team === 1 ? '#ffab97' : '#8cebd6';
-        ctx.beginPath();
-        ctx.arc(point.x, point.y, radius, 0, 2 * Math.PI);
-        ctx.fill();
+        if (model.type === 'triangle') triangleMark(ctx, model, .4, radius + .35);
+        else {
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, radius, 0, 2 * Math.PI);
+          ctx.fill();
+        }
       }
     }
     ctx.globalAlpha = 1;
+  }
+  if (projectileRadius * camera.scale < 1.35) {
+    for (const shot of projectiles) {
+      ctx.fillStyle = shot.team === 0 ? '#abffed' : '#ffd1bf';
+      triangleMark(ctx, shot, .40, 1.35);
+    }
   }
   if (state.phase === 'deploy') {
     const enemyTag = project(0,0,-arena.z * .74);
@@ -883,8 +1018,8 @@ function boot() {
     const units = state.phase === 'deploy' ? deploy.units : state.units;
     const preview = state.phase === 'deploy' ? deploy.preview.units : [];
     const valid = state.phase !== 'deploy' || !deploy.preview.error;
-    renderer.render(units, preview, valid);
-    drawMarks(marks, units, preview, valid);
+    renderer.render(units, preview, valid, state.projectiles);
+    drawMarks(marks, units, preview, valid, state.projectiles);
   }
   requestAnimationFrame(frame);
 }
