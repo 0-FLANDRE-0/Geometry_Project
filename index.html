@@ -184,11 +184,11 @@ const circle = Object.freeze({ hp: 200, damage: 75, defense: .10, penetration: 0
 const triangle = Object.freeze({ hp: 120, damage: 100, defense: 0, penetration: .15,
   radius: circle.radius, moveSpeed: circle.moveSpeed, attackGap: 1.2, attackRange: 10,
   projectileSpeed: circle.moveSpeed * 2 });
-const square = Object.freeze({ hp: 250, damage: 40, defense: .40, penetration: 0,
+const square = Object.freeze({ hp: 265, damage: 40, defense: .40, penetration: 0,
   radius: circle.radius, moveSpeed: 2.98, attackGap: 1, attackRange: circle.attackRange });
-const diamond = Object.freeze({ hp: 135, damage: 80, defense: 0, penetration: 0,
-  radius: circle.radius, width: .95, length: 1.15, moveSpeed: 7.68, attackGap: .95,
-  attackRange: circle.attackRange, chargeDistance: 3, chargeDamage: 120 });
+const diamond = Object.freeze({ hp: 135, damage: 125, defense: 0, penetration: 0,
+  radius: circle.radius, width: .95, length: 1.15, moveSpeed: 7.68, attackGap: 1.1,
+  attackRange: circle.attackRange });
 const unitTypes = Object.freeze({circle, triangle, square, diamond});
 const projectileRadius = .16;
 const arena = { x: 35, z: 35 };
@@ -314,7 +314,7 @@ ui.start.addEventListener('click', () => {
   if (state.phase !== 'deploy' || !deploy.ready) return;
   state.units = deploy.units.map((unit, id) => ({
     ...unit, id, hp: unitTypes[unit.type].hp, cooldown: 0, hurt: 0, swing: 0, fade: 0,
-    vx: 0, vz: 0, aimX: 0, aimZ: 0, heading: unit.team === 0 ? Math.PI : 0, chargeTravel: 0
+    vx: 0, vz: 0, aimX: 0, aimZ: 0, heading: unit.team === 0 ? Math.PI : 0
   }));
   state.projectiles = [];
   const allies = state.units.filter(unit => unit.team === 0).length;
@@ -334,8 +334,8 @@ ui.back.addEventListener('click', () => {
 
 const contact = circle.radius * 2;
 const tick = 1 / 60;
-function damageAgainst(attack, target, baseDamage = attack.damage) {
-  return baseDamage * (1 - unitTypes[target.type].defense * (1 - attack.penetration));
+function damageAgainst(attack, target) {
+  return attack.damage * (1 - unitTypes[target.type].defense * (1 - attack.penetration));
 }
 function closestEnemy(unit, living) {
   let best = null, range2 = Infinity;
@@ -347,13 +347,12 @@ function closestEnemy(unit, living) {
   return {target: best, range2};
 }
 function moveUnits(living) {
-  const charging = [];
   for (const unit of living) {
     unit.vx = unit.vz = 0;
     const {target, range2} = closestEnemy(unit, living);
     if (!target) continue;
     const spec = unitTypes[unit.type];
-    if (spec.projectileSpeed || spec.chargeDistance) {
+    if (spec.projectileSpeed || unit.type === 'diamond') {
       unit.heading = Math.atan2(target.x - unit.x, target.z - unit.z);
     }
     if (range2 <= spec.attackRange ** 2) continue;
@@ -376,10 +375,7 @@ function moveUnits(living) {
     const step = Math.min(spec.moveSpeed * tick, range - stopRange) / Math.hypot(dx, dz);
     unit.vx = dx * step;
     unit.vz = dz * step;
-    if (spec.chargeDistance) {
-      unit.heading = Math.atan2(unit.vx, unit.vz);
-      charging.push({unit, x: unit.x, z: unit.z});
-    }
+    if (unit.type === 'diamond') unit.heading = Math.atan2(unit.vx, unit.vz);
   }
   for (const unit of living) { unit.x += unit.vx; unit.z += unit.vz; }
   for (let pass = 0; pass < 3; pass++) {
@@ -401,13 +397,6 @@ function moveUnits(living) {
       u.x = clamp(u.x, -arena.x + circle.radius, arena.x - circle.radius);
       u.z = clamp(u.z, -arena.z + circle.radius, arena.z - circle.radius);
     }
-  }
-  for (const {unit, x, z} of charging) {
-    const step = Math.hypot(unit.vx, unit.vz);
-    // Count forward progress after collision resolution, capped at the unit's own step.
-    const progress = ((unit.x - x) * unit.vx + (unit.z - z) * unit.vz) / step;
-    unit.chargeTravel = Math.min(unitTypes[unit.type].chargeDistance,
-      unit.chargeTravel + clamp(progress, 0, step));
   }
 }
 function firstProjectileHit(projectile, distance, living) {
@@ -473,13 +462,8 @@ function simulate() {
       unit.aimX = (target.x - unit.x) / distance;
       unit.aimZ = (target.z - unit.z) / distance;
       unit.swing = .16;
-      const charged = spec.chargeDistance && unit.chargeTravel >= spec.chargeDistance;
-      const baseDamage = charged ? spec.chargeDamage : spec.damage;
-      damage[target.id] += damageAgainst(spec, target, baseDamage);
-      if (spec.chargeDistance) {
-        unit.chargeTravel = 0;
-        unit.heading = Math.atan2(unit.aimX, unit.aimZ);
-      }
+      damage[target.id] += damageAgainst(spec, target);
+      if (unit.type === 'diamond') unit.heading = Math.atan2(unit.aimX, unit.aimZ);
     }
   }
   for (const unit of living) {
