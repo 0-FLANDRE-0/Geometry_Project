@@ -179,11 +179,11 @@ const ui = Object.fromEntries([
 ].map(id => [id, byId(id)]));
 const circle = Object.freeze({ hp: 200, damage: 75, defense: .10, penetration: 0,
   radius: .5, moveSpeed: 3.06, attackGap: .82, attackRange: 1.0625 });
-const triangle = Object.freeze({ hp: 120, damage: 100, defense: 0, penetration: .10,
+const triangle = Object.freeze({ hp: 120, damage: 100, defense: 0, penetration: .15,
   radius: circle.radius, moveSpeed: circle.moveSpeed, attackGap: 1.2, attackRange: 10,
   projectileSpeed: circle.moveSpeed * 2 });
-const square = Object.freeze({ hp: 250, damage: 50, defense: .35, penetration: 0,
-  radius: circle.radius, moveSpeed: 2.98, attackGap: .85, attackRange: circle.attackRange });
+const square = Object.freeze({ hp: 250, damage: 40, defense: .40, penetration: 0,
+  radius: circle.radius, moveSpeed: 2.98, attackGap: 1, attackRange: circle.attackRange });
 const unitTypes = Object.freeze({circle, triangle, square});
 const projectileRadius = .16;
 const arena = { x: 35, z: 35 };
