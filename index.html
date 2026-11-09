@@ -223,7 +223,7 @@ const octagon = Object.freeze({ hp: 1000, damage: 25, defense: .80, penetration:
   waveSpeed: 3.85, edgeDamage: 5, holdsGround: true });
 const wall = Object.freeze({ hp: 500, damage: 10, defense: .55, penetration: .05,
   width: 1.65, length: 1, radius: Math.hypot(.825, .5), moveSpeed: 3.06, attackGap: 1,
-  attackRange: circle.attackRange, box: true, shape: 'square', rootOnMeleeHit: .5 });
+  attackRange: circle.attackRange, box: true, shape: 'square', rootOnMeleeHit: .5, enemyPushWeight: .25 });
 const unitTypes = Object.freeze({circle, triangle, piercing, spread, square, diamond, trapezoid, hexagon, pentagon, octagon, wall});
 const trapezoidCorners = [[-.68, 1], [.68, 1], [1, -1], [-1, -1]];
 const projectileRadius = .16;
@@ -638,15 +638,22 @@ function separateUnits(living, holdOrigins) {
             normalZ = distance > 1e-8 ? dz / distance : 0;
             depth = contact - distance;
           }
-          const aOrigin = a.team !== b.team && holdOrigins.get(a);
-          const bOrigin = a.team !== b.team && holdOrigins.get(b);
+          const opposing = a.team !== b.team;
+          const aOrigin = opposing && holdOrigins.get(a);
+          const bOrigin = opposing && holdOrigins.get(b);
           if (aOrigin && bOrigin) {
             // Opposing anchors block each other's step rather than sliding each other back.
             a.x = aOrigin.x; a.z = aOrigin.z;
             b.x = bOrigin.x; b.z = bOrigin.z;
           } else {
-            const aShare = aOrigin ? 0 : bOrigin ? depth : depth * .5;
-            const bShare = bOrigin ? 0 : aOrigin ? depth : depth * .5;
+            let aWeight = 1, bWeight = 1;
+            if (opposing) {
+              aWeight = aOrigin ? 0 : unitTypes[a.type].enemyPushWeight ?? 1;
+              bWeight = bOrigin ? 0 : unitTypes[b.type].enemyPushWeight ?? 1;
+            }
+            const totalWeight = aWeight + bWeight;
+            const aShare = depth * (aWeight / totalWeight);
+            const bShare = depth * (bWeight / totalWeight);
             a.x -= normalX * aShare; a.z -= normalZ * aShare;
             b.x += normalX * bShare; b.z += normalZ * bShare;
           }
