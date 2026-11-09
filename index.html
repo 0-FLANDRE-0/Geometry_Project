@@ -91,6 +91,7 @@ button:disabled { opacity: .37; cursor: default; }
 @media (orientation: landscape) and (max-width: 950px) {
   .controls { max-width: 178px; }
   .bar { display: grid; width: 178px; }
+  .unit-picker { display: grid; grid-template-columns: repeat(2, 1fr); }
   .field { display: flex; align-items: center; justify-content: space-between; }
   .stepper button { width: 37px; }
   .stepper input { width: 39px; }
@@ -136,6 +137,7 @@ button:disabled { opacity: .37; cursor: default; }
         <button class="btn" id="unit-circle" type="button" aria-pressed="true">● 원</button>
         <button class="btn" id="unit-triangle" type="button" aria-pressed="false">▲ 삼각형</button>
         <button class="btn" id="unit-square" type="button" aria-pressed="false">■ 사각형</button>
+        <button class="btn" id="unit-diamond" type="button" aria-pressed="false">◆ 마름모</button>
       </div>
       <div class="field">
         <label class="field-name" for="count">대형 인원</label>
@@ -172,7 +174,7 @@ button:disabled { opacity: .37; cursor: default; }
 'use strict';
 const byId = id => document.getElementById(id);
 const ui = Object.fromEntries([
-  'arena', 'marks', 'hint', 'unit-circle', 'unit-triangle', 'unit-square',
+  'arena', 'marks', 'hint', 'unit-circle', 'unit-triangle', 'unit-square', 'unit-diamond',
   'count', 'count-down', 'count-up', 'rows', 'rows-down', 'rows-up', 'undo', 'place',
   'start', 'deploy-bar', 'battle-bar', 'back', 'clock', 'result', 'verdict', 'summary', 'error',
   'zoom-out', 'zoom-in', 'view-reset', 'fullscreen', 'screen-notice'
@@ -184,7 +186,10 @@ const triangle = Object.freeze({ hp: 120, damage: 100, defense: 0, penetration: 
   projectileSpeed: circle.moveSpeed * 2 });
 const square = Object.freeze({ hp: 250, damage: 40, defense: .40, penetration: 0,
   radius: circle.radius, moveSpeed: 2.98, attackGap: 1, attackRange: circle.attackRange });
-const unitTypes = Object.freeze({circle, triangle, square});
+const diamond = Object.freeze({ hp: 135, damage: 80, defense: 0, penetration: 0,
+  radius: circle.radius, width: .95, length: 1.15, moveSpeed: 7.68, attackGap: .95,
+  attackRange: circle.attackRange, chargeDistance: 3, chargeDamage: 120 });
+const unitTypes = Object.freeze({circle, triangle, square, diamond});
 const projectileRadius = .16;
 const arena = { x: 35, z: 35 };
 const spacing = 1.5;
@@ -201,8 +206,9 @@ function makePreview() {
   const {anchor, count, rows, type} = deploy;
   if (!anchor) return {units: [], team: null, bounds: null, error: ''};
   const team = anchor.z < 0 ? 1 : 0;
-  const halfWidth = (Math.ceil(count / rows) - 1) * spacing / 2 + circle.radius;
-  const halfDepth = (rows - 1) * spacing / 2 + circle.radius;
+  const spec = unitTypes[type];
+  const halfWidth = (Math.ceil(count / rows) - 1) * spacing / 2 + (spec.width ?? 2 * spec.radius) / 2;
+  const halfDepth = (rows - 1) * spacing / 2 + (spec.length ?? 2 * spec.radius) / 2;
   if (halfWidth > arena.x || halfDepth * 2 > arena.z) {
     return {units: [], team, bounds: null, error: '대형이 한 구역보다 커. 인원이나 줄 수를 조절해줘.'};
   }
@@ -308,7 +314,7 @@ ui.start.addEventListener('click', () => {
   if (state.phase !== 'deploy' || !deploy.ready) return;
   state.units = deploy.units.map((unit, id) => ({
     ...unit, id, hp: unitTypes[unit.type].hp, cooldown: 0, hurt: 0, swing: 0, fade: 0,
-    vx: 0, vz: 0, aimX: 0, aimZ: 0, heading: unit.team === 0 ? Math.PI : 0
+    vx: 0, vz: 0, aimX: 0, aimZ: 0, heading: unit.team === 0 ? Math.PI : 0, chargeTravel: 0
   }));
   state.projectiles = [];
   const allies = state.units.filter(unit => unit.team === 0).length;
@@ -328,8 +334,8 @@ ui.back.addEventListener('click', () => {
 
 const contact = circle.radius * 2;
 const tick = 1 / 60;
-function damageAgainst(attack, target) {
-  return attack.damage * (1 - unitTypes[target.type].defense * (1 - attack.penetration));
+function damageAgainst(attack, target, baseDamage = attack.damage) {
+  return baseDamage * (1 - unitTypes[target.type].defense * (1 - attack.penetration));
 }
 function closestEnemy(unit, living) {
   let best = null, range2 = Infinity;
@@ -341,12 +347,15 @@ function closestEnemy(unit, living) {
   return {target: best, range2};
 }
 function moveUnits(living) {
+  const charging = [];
   for (const unit of living) {
     unit.vx = unit.vz = 0;
     const {target, range2} = closestEnemy(unit, living);
     if (!target) continue;
     const spec = unitTypes[unit.type];
-    if (spec.projectileSpeed) unit.heading = Math.atan2(target.x - unit.x, target.z - unit.z);
+    if (spec.projectileSpeed || spec.chargeDistance) {
+      unit.heading = Math.atan2(target.x - unit.x, target.z - unit.z);
+    }
     if (range2 <= spec.attackRange ** 2) continue;
     const range = Math.sqrt(range2);
     let dx = (target.x - unit.x) / range;
@@ -367,6 +376,10 @@ function moveUnits(living) {
     const step = Math.min(spec.moveSpeed * tick, range - stopRange) / Math.hypot(dx, dz);
     unit.vx = dx * step;
     unit.vz = dz * step;
+    if (spec.chargeDistance) {
+      unit.heading = Math.atan2(unit.vx, unit.vz);
+      charging.push({unit, x: unit.x, z: unit.z});
+    }
   }
   for (const unit of living) { unit.x += unit.vx; unit.z += unit.vz; }
   for (let pass = 0; pass < 3; pass++) {
@@ -388,6 +401,13 @@ function moveUnits(living) {
       u.x = clamp(u.x, -arena.x + circle.radius, arena.x - circle.radius);
       u.z = clamp(u.z, -arena.z + circle.radius, arena.z - circle.radius);
     }
+  }
+  for (const {unit, x, z} of charging) {
+    const step = Math.hypot(unit.vx, unit.vz);
+    // Count forward progress after collision resolution, capped at the unit's own step.
+    const progress = ((unit.x - x) * unit.vx + (unit.z - z) * unit.vz) / step;
+    unit.chargeTravel = Math.min(unitTypes[unit.type].chargeDistance,
+      unit.chargeTravel + clamp(progress, 0, step));
   }
 }
 function firstProjectileHit(projectile, distance, living) {
@@ -453,7 +473,13 @@ function simulate() {
       unit.aimX = (target.x - unit.x) / distance;
       unit.aimZ = (target.z - unit.z) / distance;
       unit.swing = .16;
-      damage[target.id] += damageAgainst(spec, target);
+      const charged = spec.chargeDistance && unit.chargeTravel >= spec.chargeDistance;
+      const baseDamage = charged ? spec.chargeDamage : spec.damage;
+      damage[target.id] += damageAgainst(spec, target, baseDamage);
+      if (spec.chargeDistance) {
+        unit.chargeTravel = 0;
+        unit.heading = Math.atan2(unit.aimX, unit.aimZ);
+      }
     }
   }
   for (const unit of living) {
@@ -729,7 +755,9 @@ function createThreeScene(three, context) {
     triangle: new three.CylinderGeometry(1, 1, 1, 3).translate(0, .5, 0),
     'triangle-cap': new three.CircleGeometry(1, 3, -Math.PI / 2).rotateX(-Math.PI / 2),
     square: new three.CylinderGeometry(1, 1, 1, 4, 1, false, Math.PI / 4).translate(0, .5, 0),
-    'square-cap': new three.CircleGeometry(1, 4, -Math.PI / 4).rotateX(-Math.PI / 2)
+    'square-cap': new three.CircleGeometry(1, 4, -Math.PI / 4).rotateX(-Math.PI / 2),
+    diamond: new three.CylinderGeometry(1, 1, 1, 4).translate(0, .5, 0),
+    'diamond-cap': new three.CircleGeometry(1, 4, -Math.PI / 2).rotateX(-Math.PI / 2)
   };
   // Reuse the same meshes and materials as primitives move between frames.
   const pools = new Map();
@@ -822,15 +850,18 @@ function createCanvasScene(ctx) {
         return;
       }
       const isSquare = shape === 'square' || shape === 'square-cap';
-      if (isSquare || shape === 'triangle' || shape === 'triangle-cap') {
-        const sides = isSquare ? 4 : 3;
-        const firstCorner = heading + (isSquare ? Math.PI / 4 : 0);
+      const isDiamond = shape === 'diamond' || shape === 'diamond-cap';
+      if (isSquare || isDiamond || shape === 'triangle' || shape === 'triangle-cap') {
+        const sides = isSquare || isDiamond ? 4 : 3;
+        const firstCorner = isSquare ? Math.PI / 4 : 0;
+        const sinHeading = Math.sin(heading), cosHeading = Math.cos(heading);
         const corners = Array.from({length: sides}, (_, i) => {
           const angle = firstCorner + i * 2 * Math.PI / sides;
-          return {x: x + sx * Math.sin(angle), z: z + sz * Math.cos(angle)};
+          const px = sx * Math.sin(angle), pz = sz * Math.cos(angle);
+          return {x: x + px * cosHeading + pz * sinHeading, z: z - px * sinHeading + pz * cosHeading};
         });
         const tops = corners.map(p => project(p.x, y + sy, p.z));
-        if (shape === 'triangle' || shape === 'square') {
+        if (!shape.endsWith('-cap')) {
           ctx.fillStyle = rgba(color, lit ? .74 : .85);
           for (let i = 0; i < corners.length; i++) {
             const j = (i + 1) % corners.length;
@@ -891,8 +922,11 @@ function createRenderer(scene) {
     const life = model.hp === 0 ? model.fade / .23 : 1;
     if (life <= 0) return;
     const color = teams[model.team];
+    const spec = unitTypes[model.type];
     const cornerScale = model.type === 'square' ? Math.SQRT2 : 1;
-    const radius = unitTypes[model.type].radius * cornerScale * (model.hp === 0 ? .55 + .45 * life : 1);
+    const size = cornerScale * (model.hp === 0 ? .55 + .45 * life : 1);
+    const halfWidth = (spec.width ?? 2 * spec.radius) / 2 * size;
+    const halfLength = (spec.length ?? 2 * spec.radius) / 2 * size;
     const body = model.type === 'circle' ? 'body' : model.type;
     const capShape = model.type === 'circle' ? 'disk' : model.type + '-cap';
     const heading = model.heading ?? (model.team === 0 ? Math.PI : 0);
@@ -902,16 +936,16 @@ function createRenderer(scene) {
     const height = (.40 + swing * .35) * life;
     if (ghost) {
       const tone = allowed ? color.ghost : [1,.77,.38];
-      draw(body,x,.025,z,radius,height,radius,[...tone,.26],1,heading);
-      draw(body,x,height+.025,z,radius * .91,.052,radius * .91,[...tone,.80],1,heading);
-      draw(capShape,x,height+.081,z,radius * .69,0,radius * .69,[.11,.21,.20,.81],0,heading);
+      draw(body,x,.025,z,halfWidth,height,halfLength,[...tone,.26],1,heading);
+      draw(body,x,height+.025,z,halfWidth * .91,.052,halfLength * .91,[...tone,.80],1,heading);
+      draw(capShape,x,height+.081,z,halfWidth * .69,0,halfLength * .69,[.11,.21,.20,.81],0,heading);
       return;
     }
-    draw(capShape,x+.10,.021,z+.13,radius * 1.16,0,radius * 1.09,[.04,.08,.09,.68 * life],0,heading);
-    draw(body,x,.024,z,radius,height,radius,[...color.body,life],1,heading);
-    draw(body,x,height+.024,z,radius * .94,.079*life,radius * .94,[...color.rim,life],1,heading);
+    draw(capShape,x+.10,.021,z+.13,halfWidth * 1.16,0,halfLength * 1.09,[.04,.08,.09,.68 * life],0,heading);
+    draw(body,x,.024,z,halfWidth,height,halfLength,[...color.body,life],1,heading);
+    draw(body,x,height+.024,z,halfWidth * .94,.079*life,halfLength * .94,[...color.rim,life],1,heading);
     const cap = model.hurt > .08 ? [1,.94,.83] : color.cap;
-    draw(capShape,x,height+.105*life,z,radius * .72,0,radius * .72,[...cap,life],0,heading);
+    draw(capShape,x,height+.105*life,z,halfWidth * .72,0,halfLength * .72,[...cap,life],0,heading);
   }
   return {
     render(units, preview, valid, projectiles) {
@@ -928,13 +962,16 @@ function createRenderer(scene) {
   };
 }
 
-function polygonMark(ctx, model, y, radius, sides) {
+function polygonMark(ctx, model, y, radius, sides, widthRatio = 1) {
   const point = project(model.x, y, model.z);
   const heading = (model.heading ?? (model.team === 0 ? Math.PI : 0)) - camera.yaw;
-  const angle = Math.atan2(camera.sin * Math.cos(heading), Math.sin(heading)) + (sides === 4 ? Math.PI / 4 : 0);
+  const angle = Math.atan2(camera.sin * Math.cos(heading), Math.sin(heading));
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  const firstCorner = model.type === 'square' ? Math.PI / 4 : 0;
   fillPolygon(ctx, Array.from({length: sides}, (_, i) => {
-    const vertex = angle + i * 2 * Math.PI / sides;
-    return {x: point.x + radius * Math.cos(vertex), y: point.y + radius * Math.sin(vertex)};
+    const vertex = firstCorner + i * 2 * Math.PI / sides;
+    const forward = radius * Math.cos(vertex), side = radius * Math.sin(vertex) * widthRatio;
+    return {x: point.x + forward * cos - side * sin, y: point.y + forward * sin + side * cos};
   }));
 }
 
@@ -952,6 +989,7 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
         ctx.fillStyle = isPreview && !valid ? '#f6d393' : model.team === 1 ? '#ffab97' : '#8cebd6';
         if (model.type === 'triangle') polygonMark(ctx, model, .4, radius + .35, 3);
         else if (model.type === 'square') polygonMark(ctx, model, .4, radius * Math.SQRT2, 4);
+        else if (model.type === 'diamond') polygonMark(ctx, model, .4, radius * diamond.length, 4, diamond.width / diamond.length);
         else {
           ctx.beginPath();
           ctx.arc(point.x, point.y, radius, 0, 2 * Math.PI);
