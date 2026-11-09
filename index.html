@@ -57,7 +57,7 @@ button:disabled { opacity: .37; cursor: default; }
 .view-tools { position: absolute; z-index: 1; right: 10px; bottom: 10px; display: grid; gap: 5px; width: 91px; }
 .view-tools .btn { background: #101d20ee; padding: 0 6px; }
 .view-tools .btn[aria-pressed="true"] { color: var(--mint); border-color: #76c8b5; }
-.zoom-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+.view-modes, .zoom-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
 .zoom-tools .btn { font-size: 20px; }
 #arena[data-orbit="true"] { cursor: grab; }
 #arena[data-orbit="true"]:active { cursor: grabbing; }
@@ -118,7 +118,7 @@ button:disabled { opacity: .37; cursor: default; }
   .top-actions .state { display: none; }
   .bar { flex-wrap: wrap; gap: 7px; }
   .view-tools { display: flex; width: auto; }
-  .zoom-tools .btn { min-width: 42px; }
+  .view-modes .btn, .zoom-tools .btn { min-width: 42px; }
   .actions { width: 100%; margin: 0; }
   .actions .btn { flex: 1; }
   .rotate { display: inline; }
@@ -149,14 +149,17 @@ button:disabled { opacity: .37; cursor: default; }
     </div>
   </header>
   <main class="stage" aria-label="훈련장">
-    <canvas id="arena" tabindex="0" aria-label="3D 전장. 한 손가락으로 대형 이동, 두 손가락으로 카메라 회전과 확대."></canvas>
+    <canvas id="arena" tabindex="0" aria-label="3D 전장. 한 손가락으로 대형 이동, 두 손가락으로 시점 회전과 확대. 시점 이동 모드도 사용할 수 있어."></canvas>
     <canvas id="marks" aria-hidden="true"></canvas>
-    <div class="stage-label"><div class="kicker">ARENA 01</div><strong>평면 훈련장</strong></div>
+    <div class="stage-label"><div class="kicker">ARENA 01</div><strong>평면 훈련장 · 70 × 70</strong></div>
     <div class="stats" aria-label="원 유닛, 근거리, 체력 200, 공격력 75, 방어율 10%, 방어관통률 0%">
       <span class="circle-icon" aria-hidden="true"></span><b>원 · 근거리</b><span>체력 <b>200</b></span><span>공격 <b>75</b></span><span>방어 <b>10%</b></span>
     </div>
     <div class="view-tools" role="group" aria-label="카메라 조작">
-      <button class="btn" id="view-mode" type="button" aria-pressed="false">회전 모드</button>
+      <div class="view-modes">
+        <button class="btn" id="view-mode" type="button" aria-label="시점 회전 모드" aria-pressed="false">회전</button>
+        <button class="btn" id="pan-mode" type="button" aria-label="시점 이동 모드" aria-pressed="false">이동</button>
+      </div>
       <div class="zoom-tools">
         <button class="btn" id="zoom-out" type="button" aria-label="시점 축소">−</button>
         <button class="btn" id="zoom-in" type="button" aria-label="시점 확대">+</button>
@@ -215,20 +218,27 @@ const ui = Object.fromEntries([
   'arena', 'marks', 'friendly-count', 'enemy-count', 'phase', 'hint', 'remaining',
   'count', 'count-down', 'count-up', 'rows', 'rows-down', 'rows-up', 'undo', 'place',
   'start', 'deploy-bar', 'battle-bar', 'back', 'clock', 'result', 'verdict', 'summary', 'error',
-  'view-mode', 'zoom-out', 'zoom-in', 'view-reset', 'fullscreen', 'screen-notice'
+  'view-mode', 'pan-mode', 'zoom-out', 'zoom-in', 'view-reset', 'fullscreen', 'screen-notice'
 ].map(id => [id, byId(id)]));
 const circle = Object.freeze({ hp: 200, damage: 75, defense: .10, penetration: 0,
-  radius: .72, moveSpeed: 4.4, attackGap: .82, reach: .09 });
-const arena = { x: 23, z: 15 };
+  radius: .5, moveSpeed: 3.06, attackGap: .82, reach: .0625 });
+const arena = { x: 35, z: 35 };
 const capacity = 10;
-const spacing = 2.12;
-const enemyLine = Array.from({length: 10}, (_, i) => ({x: (i - 4.5) * 3.1, z: 0, team: 1}));
-const deploy = {count: 10, rows: 2, anchor: {x: 0, z: 8}, groups: []};
+const spacing = 1.5;
+const enemyLine = Array.from({length: 10}, (_, i) => ({x: (i - 4.5) * 2.15, z: -arena.z / 2, team: 1}));
+const deploy = {count: 10, rows: 2, anchor: {x: 0, z: arena.z / 2}, groups: []};
 const state = {phase: 'deploy', elapsed: 0, clockTenths: -1, units: [], alive: [0, 10]};
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(n, hi));
 const distance2 = (a, b) => (a.x - b.x) ** 2 + (a.z - b.z) ** 2;
 let needsPaint = true;
-let orbitMode = false;
+let viewMode = null;
+function cameraMode() { return viewMode ?? (state.phase === 'deploy' ? 'place' : 'orbit'); }
+function syncCameraMode() {
+  const mode = cameraMode();
+  ui['view-mode'].setAttribute('aria-pressed', String(mode === 'orbit'));
+  ui['pan-mode'].setAttribute('aria-pressed', String(mode === 'pan'));
+  ui.arena.dataset.orbit = mode !== 'place';
+}
 const deployedCount = () => deploy.groups.reduce((total, group) => total + group.length, 0);
 
 function formation() {
@@ -252,7 +262,7 @@ function placementError(units) {
     return '대형 전체를 민트색 아군 배치 구역 안에 놓아줘.';
   }
   const blockers = [...enemyLine, ...deploy.groups.flat()];
-  if (units.some(u => blockers.some(v => distance2(u, v) < (radius * 2 + .14) ** 2))) {
+  if (units.some(u => blockers.some(v => distance2(u, v) < (radius * 2 + .10) ** 2))) {
     return '기존 유닛과 너무 가까워. 대형을 조금 옮겨줘.';
   }
   return '';
@@ -275,8 +285,9 @@ function updateDeploy() {
   ui.place.disabled = !deploy.count || Boolean(error);
   ui.undo.disabled = !deploy.groups.length;
   ui.start.disabled = remaining === capacity;
-  const text = orbitMode
-    ? '한 손가락으로 회전. 회전 모드를 끄면 대형을 다시 옮길 수 있어.'
+  const mode = cameraMode();
+  const text = mode === 'pan' ? '전장을 끌어 시점 이동 · 이동 버튼을 다시 누르면 대형을 옮길 수 있어.'
+    : mode === 'orbit' ? '전장을 끌어 시점 회전 · 회전 버튼을 다시 누르면 대형을 옮길 수 있어.'
     : error || (remaining
       ? '한 손가락으로 대형 이동 · 두 손가락으로 시점 회전과 확대'
       : '원 10기 배치 완료. 전투를 시작하거나 마지막 대형을 되돌릴 수 있어.');
@@ -290,13 +301,12 @@ function updatePhase() {
   ui['deploy-bar'].hidden = state.phase !== 'deploy';
   ui['battle-bar'].hidden = state.phase === 'deploy';
   ui.result.hidden = state.phase !== 'result';
-  ui['view-mode'].hidden = state.phase !== 'deploy';
-  ui.arena.dataset.orbit = orbitMode || state.phase !== 'deploy';
+  syncCameraMode();
   if (state.phase === 'deploy') updateDeploy();
   else {
     ui.hint.dataset.error = false;
     ui.hint.textContent = state.phase === 'battle'
-      ? '전장을 끌면 회전 · 두 손가락을 벌리거나 모으면 확대·축소'
+      ? '회전이나 이동을 고른 뒤 전장을 끌어 · 두 손가락을 벌리거나 모으면 확대·축소'
       : '다시 배치를 누르면 방금 놓았던 대형으로 돌아가.';
     syncCounts();
   }
@@ -343,8 +353,7 @@ ui.start.addEventListener('click', () => {
   updatePhase();
 });
 ui.back.addEventListener('click', () => {
-  orbitMode = false;
-  ui['view-mode'].setAttribute('aria-pressed', 'false');
+  viewMode = null;
   state.phase = 'deploy';
   state.alive = [0, enemyLine.length];
   updatePhase();
@@ -371,15 +380,15 @@ function moveUnits(living) {
     const range = Math.sqrt(range2);
     let dx = (target.x - unit.x) / range;
     let dz = (target.z - unit.z) / range;
-    let forward = 2.05, side = 0;
+    let forward = 1.42, side = 0;
     for (const other of living) {
       if (other.team !== unit.team || unit === other) continue;
       const rx = other.x - unit.x, rz = other.z - unit.z;
       const along = rx * dx + rz * dz;
       const lateral = -rx * dz + rz * dx;
-      if (along > .05 && along < forward && Math.abs(lateral) < contact * .88) {
+      if (along > .035 && along < forward && Math.abs(lateral) < contact * .88) {
         forward = along;
-        side = Math.abs(lateral) > .025 ? -Math.sign(lateral) : (unit.id % 2 ? 1 : -1);
+        side = Math.abs(lateral) > .018 ? -Math.sign(lateral) : (unit.id % 2 ? 1 : -1);
       }
     }
     if (side) [dx, dz] = [dx - dz * side * .82, dz + dx * side * .82];
@@ -451,40 +460,44 @@ function simulate() {
   updatePhase();
 }
 
+const overhead = Math.PI / 2;
+const maxZoom = 10;
 const camera = {
-  w: 1, h: 1, dpr: 1, scale: 1, centerY: 0, yaw: 0, pitchOffset: 0, zoom: 1,
-  sinYaw: 0, cosYaw: 1, sin: .74, cos: Math.sqrt(1 - .74 ** 2)
+  w: 1, h: 1, dpr: 1, scale: 1, centerY: 0, yaw: 0, pitch: overhead, zoom: 1,
+  targetX: 0, targetZ: 0, sinYaw: 0, cosYaw: 1, sin: 1, cos: 0
 };
-function basePitch() {
-  return Math.asin(camera.h < 300 && camera.w > camera.h ? .56 : .74);
-}
 function updateCamera() {
-  const pitch = basePitch() + camera.pitchOffset;
-  camera.sin = Math.sin(pitch);
-  camera.cos = Math.cos(pitch);
+  camera.sin = Math.sin(camera.pitch);
+  camera.cos = Math.cos(camera.pitch);
   camera.sinYaw = Math.sin(camera.yaw);
   camera.cosYaw = Math.cos(camera.yaw);
   camera.centerY = camera.h / 2 + 2;
   const c = Math.abs(camera.cosYaw), s = Math.abs(camera.sinYaw);
-  const boardWidth = 48 * c + 32 * s;
-  const boardDepth = 48 * s + 30 * c;
+  const width = arena.x * 2 + 2, depth = arena.z * 2 + 2;
+  const boardWidth = width * c + depth * s;
+  const boardDepth = width * s + depth * c;
   const gutter = camera.w >= 575 ? 178 : 24;
-  const fit = Math.min((camera.w - gutter) / boardWidth, (camera.h - 18) / (boardDepth * camera.sin + 3.9));
+  const fit = Math.min((camera.w - gutter) / boardWidth, (camera.h - 18) / (boardDepth * camera.sin + 1));
   camera.scale = Math.max(.01, fit) * camera.zoom;
   ui['zoom-out'].disabled = camera.zoom <= .65;
-  ui['zoom-in'].disabled = camera.zoom >= 3.2;
+  ui['zoom-in'].disabled = camera.zoom >= maxZoom;
   needsPaint = true;
 }
-function turnCamera(dx, dy, zoomFactor = 1) {
+function turnCamera(dx, dy, zoomFactor = 1, focus = null) {
+  const pivot = focus && groundPoint(focus.x, focus.y);
   camera.yaw = (camera.yaw - dx * .012) % (2 * Math.PI);
-  const base = basePitch();
-  camera.pitchOffset = clamp(base + camera.pitchOffset + dy * .007, .35, 1.41) - base;
-  camera.zoom = clamp(camera.zoom * zoomFactor, .65, 3.2);
+  camera.pitch = clamp(camera.pitch + dy * .007, .35, overhead);
+  camera.zoom = clamp(camera.zoom * zoomFactor, .65, maxZoom);
   updateCamera();
+  if (pivot) {
+    const shifted = groundPoint(focus.x, focus.y);
+    moveCamera(pivot.x - shifted.x, pivot.z - shifted.z);
+  }
 }
 function project(x, y, z) {
-  const right = x * camera.cosYaw - z * camera.sinYaw;
-  const depth = x * camera.sinYaw + z * camera.cosYaw;
+  const localX = x - camera.targetX, localZ = z - camera.targetZ;
+  const right = localX * camera.cosYaw - localZ * camera.sinYaw;
+  const depth = localX * camera.sinYaw + localZ * camera.cosYaw;
   return {
     x: camera.w / 2 + right * camera.scale,
     y: camera.centerY + (depth * camera.sin - y * camera.cos) * camera.scale
@@ -497,7 +510,17 @@ function groundOffset(right, depth) {
   };
 }
 function groundPoint(x, y) {
-  return groundOffset((x - camera.w / 2) / camera.scale, (y - camera.centerY) / (camera.scale * camera.sin));
+  const offset = groundOffset((x - camera.w / 2) / camera.scale, (y - camera.centerY) / (camera.scale * camera.sin));
+  return {x: camera.targetX + offset.x, z: camera.targetZ + offset.z};
+}
+function moveCamera(dx, dz) {
+  camera.targetX = clamp(camera.targetX + dx, -arena.x, arena.x);
+  camera.targetZ = clamp(camera.targetZ + dz, -arena.z, arena.z);
+  needsPaint = true;
+}
+function panCamera(dx, dy) {
+  const offset = groundOffset(dx / camera.scale, dy / (camera.scale * camera.sin));
+  moveCamera(-offset.x, -offset.z);
 }
 function groundRectangle(ctx, x0, z0, x1, z1, y) {
   const corner = project(x0, y, z0);
@@ -510,16 +533,18 @@ function groundRectangle(ctx, x0, z0, x1, z1, y) {
   ctx.closePath();
 }
 
-ui['view-mode'].addEventListener('click', () => {
-  orbitMode = !orbitMode;
-  ui['view-mode'].setAttribute('aria-pressed', String(orbitMode));
-  ui.arena.dataset.orbit = orbitMode;
-  updateDeploy();
-});
-ui['zoom-out'].addEventListener('click', () => turnCamera(0, 0, 1 / 1.24));
-ui['zoom-in'].addEventListener('click', () => turnCamera(0, 0, 1.24));
+for (const [id, mode] of [['view-mode', 'orbit'], ['pan-mode', 'pan']]) {
+  ui[id].addEventListener('click', () => {
+    viewMode = viewMode === mode ? null : mode;
+    syncCameraMode();
+    if (state.phase === 'deploy') updateDeploy();
+  });
+}
+ui['zoom-out'].addEventListener('click', () => turnCamera(0, 0, 1 / 1.36));
+ui['zoom-in'].addEventListener('click', () => turnCamera(0, 0, 1.36));
 ui['view-reset'].addEventListener('click', () => {
-  camera.yaw = camera.pitchOffset = 0;
+  camera.yaw = camera.targetX = camera.targetZ = 0;
+  camera.pitch = overhead;
   camera.zoom = 1;
   updateCamera();
 });
@@ -527,16 +552,20 @@ ui['view-reset'].addEventListener('click', () => {
 const pointers = new Map();
 let multiTouch = false;
 let placementOrigin = null;
-function pointToAnchor(point) {
+function viewportPoint(x, y) {
   const box = ui.arena.getBoundingClientRect();
-  const {x, z} = groundPoint(point.x - box.left, point.y - box.top);
+  return {x: x - box.left, y: y - box.top};
+}
+function pointToAnchor(point) {
+  const screen = viewportPoint(point.x, point.y);
+  const {x, z} = groundPoint(screen.x, screen.y);
   deploy.anchor = {x: Math.round(x * 4) / 4, z: Math.round(z * 4) / 4};
   updateDeploy();
 }
 ui.arena.addEventListener('pointerdown', event => {
-  if (![0, 2].includes(event.button) || pointers.size >= 2) return;
-  const orbit = state.phase !== 'deploy' || orbitMode || event.button === 2;
-  const point = {x: event.clientX, y: event.clientY, orbit};
+  if (![0, 1, 2].includes(event.button) || pointers.size >= 2) return;
+  const mode = event.button === 1 || event.shiftKey ? 'pan' : event.button === 2 ? 'orbit' : cameraMode();
+  const point = {x: event.clientX, y: event.clientY, mode};
   pointers.set(event.pointerId, point);
   ui.arena.setPointerCapture(event.pointerId);
   if (pointers.size === 2) {
@@ -546,7 +575,7 @@ ui.arena.addEventListener('pointerdown', event => {
       placementOrigin = null;
       updateDeploy();
     }
-  } else if (!orbit && deploy.count) {
+  } else if (mode === 'place' && deploy.count) {
     placementOrigin = {...deploy.anchor};
     pointToAnchor(point);
   }
@@ -559,9 +588,17 @@ ui.arena.addEventListener('pointermove', event => {
     const other = [...pointers.values()].find(p => p !== point);
     const before = Math.hypot(point.x - other.x, point.y - other.y);
     const after = Math.hypot(event.clientX - other.x, event.clientY - other.y);
-    turnCamera(dx / 2, dy / 2, before >= 12 && after >= 12 ? after / before : 1);
+    const zoomFactor = before >= 12 && after >= 12 ? after / before : 1;
+    const center = viewportPoint((point.x + other.x) / 2, (point.y + other.y) / 2);
+    if (cameraMode() === 'pan') {
+      turnCamera(0, 0, zoomFactor, center);
+      panCamera(dx / 2, dy / 2);
+    } else {
+      turnCamera(dx / 2, dy / 2, zoomFactor, zoomFactor === 1 ? null : center);
+    }
   } else if (!multiTouch) {
-    if (point.orbit) turnCamera(dx, dy);
+    if (point.mode === 'pan') panCamera(dx, dy);
+    else if (point.mode === 'orbit') turnCamera(dx, dy);
     else if (state.phase === 'deploy' && deploy.count) pointToAnchor({x: event.clientX, y: event.clientY});
   }
   point.x = event.clientX;
@@ -580,15 +617,17 @@ ui.arena.addEventListener('contextmenu', event => event.preventDefault());
 ui.arena.addEventListener('wheel', event => {
   event.preventDefault();
   const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? camera.h : 1;
-  turnCamera(0, 0, Math.exp(-clamp(event.deltaY * unit, -160, 160) * .0025));
+  turnCamera(0, 0, Math.exp(-clamp(event.deltaY * unit, -160, 160) * .0025),
+    viewportPoint(event.clientX, event.clientY));
 }, {passive: false});
 ui.arena.addEventListener('keydown', event => {
   const move = {ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1]}[event.key];
   if (!move) return;
   event.preventDefault();
-  if (state.phase !== 'deploy' || orbitMode) {
-    turnCamera(move[0] * 12, move[1] * 12);
-  } else if (deploy.count) {
+  const mode = cameraMode();
+  if (mode === 'pan') panCamera(-move[0] * 24, -move[1] * 24);
+  else if (mode === 'orbit') turnCamera(move[0] * 12, move[1] * 12);
+  else if (deploy.count) {
     const offset = groundOffset(move[0] * .5, move[1] * .5);
     deploy.anchor.x += offset.x;
     deploy.anchor.z += offset.z;
@@ -627,15 +666,16 @@ function createWebGLScene(gl) {
   attach(gl.VERTEX_SHADER, `
     attribute vec3 aVertex, aNormal;
     uniform vec3 uCenter, uSize;
-    uniform vec2 uScale, uTilt, uYaw;
-    uniform float uYOffset, uLit;
+    uniform vec2 uScale, uTilt, uYaw, uTarget;
+    uniform float uYOffset, uLit, uDepthScale;
     varying float vLight;
     void main() {
       vec3 p = aVertex * uSize + uCenter;
+      p.xz -= uTarget;
       float right = p.x * uYaw.y - p.z * uYaw.x;
       float depth = p.x * uYaw.x + p.z * uYaw.y;
       gl_Position = vec4(right * uScale.x, (p.y * uTilt.y - depth * uTilt.x) * uScale.y + uYOffset,
-                         -(p.y * uTilt.x + depth * uTilt.y) * .026, 1.0);
+                         -(p.y * uTilt.x + depth * uTilt.y) * uDepthScale, 1.0);
       float shade = .64 + .36 * max(0.0, dot(aNormal, vec3(-.46, .82, -.34)));
       vLight = mix(1.0, shade, uLit);
     }
@@ -650,7 +690,7 @@ function createWebGLScene(gl) {
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
   gl.useProgram(program);
   const attributes = ['aVertex','aNormal'].map(name => gl.getAttribLocation(program, name));
-  const uniforms = Object.fromEntries(['uCenter', 'uSize', 'uScale', 'uTilt', 'uYaw', 'uYOffset', 'uLit', 'uColor']
+  const uniforms = Object.fromEntries(['uCenter', 'uSize', 'uScale', 'uTilt', 'uYaw', 'uTarget', 'uYOffset', 'uLit', 'uDepthScale', 'uColor']
     .map(name => [name, gl.getUniformLocation(program, name)]));
   for (const location of attributes) gl.enableVertexAttribArray(location);
   function mesh(vertices) {
@@ -691,6 +731,7 @@ function createWebGLScene(gl) {
   }
   const shapes = {plane, body, disk};
   gl.enable(gl.DEPTH_TEST);
+  gl.depthFunc(gl.LEQUAL);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   return {
@@ -701,6 +742,9 @@ function createWebGLScene(gl) {
       gl.uniform2f(uniforms.uScale, 2 * camera.scale / camera.w, 2 * camera.scale / camera.h);
       gl.uniform2f(uniforms.uTilt, camera.sin, camera.cos);
       gl.uniform2f(uniforms.uYaw, camera.sinYaw, camera.cosYaw);
+      gl.uniform2f(uniforms.uTarget, camera.targetX, camera.targetZ);
+      const depthExtent = 2 * Math.hypot(arena.x + 1, arena.z + 1) * camera.cos + 1;
+      gl.uniform1f(uniforms.uDepthScale, .95 / depthExtent);
       gl.uniform1f(uniforms.uYOffset, 1 - 2 * camera.centerY / camera.h);
     },
     draw(shape, ...args) { draw(shapes[shape], ...args); }
@@ -751,19 +795,22 @@ function createRenderer(scene) {
   const draw = scene.draw;
   const slabs = [];
   function slab(x, y, z, width, depth, color) { slabs.push({x,y,z,width,depth,color}); }
-  slab(0,-.18,.10,47.2,31.3,[.17,.23,.24]);
-  slab(0,-.02,0,46,30,[.12,.17,.18]);
-  slab(0,.002,-7.5,46,15,[.153,.193,.199]);
-  slab(0,.002,7.5,46,15,[.115,.223,.221]);
+  const width = arena.x * 2, depth = arena.z * 2;
+  slab(0,-.18,0,width + 1.5,depth + 1.5,[.17,.23,.24]);
+  slab(0,-.02,0,width,depth,[.12,.17,.18]);
+  slab(0,.002,-arena.z/2,width,arena.z,[.153,.193,.199]);
+  slab(0,.002,arena.z/2,width,arena.z,[.115,.223,.221]);
   const line = [.19,.274,.274], major = [.23,.33,.33];
-  for (let x = -22; x <= 22; x++) slab(x,.01,0,x % 4 === 0 ? .037 : .020,30,x % 4 === 0 ? major : line);
-  for (let z = -14; z <= 14; z++) {
-    if (z === 0) continue;
-    slab(0,.012,z,46,z % 4 === 0 ? .037 : .020,z % 4 === 0 ? major : line);
+  for (let x = -arena.x + 2.5; x < arena.x; x += 2.5) {
+    slab(x,.01,0,x % 10 === 0 ? .09 : .038,depth,x % 10 === 0 ? major : line);
   }
-  for (let x = -22; x <= 22; x += 2) slab(x,.02,0,1.12,.075,[.53,.70,.66]);
-  for (const x of [-23, 23]) slab(x,.02,0,.09,30,[.41,.56,.53]);
-  for (const z of [-15, 15]) slab(0,.02,z,46,.10,z > 0 ? [.37,.65,.58] : [.55,.37,.35]);
+  for (let z = -arena.z + 2.5; z < arena.z; z += 2.5) {
+    if (z === 0) continue;
+    slab(0,.012,z,width,z % 10 === 0 ? .09 : .038,z % 10 === 0 ? major : line);
+  }
+  for (let x = -arena.x + 1.5; x < arena.x - 1; x += 3) slab(x,.02,0,1.62,.15,[.53,.70,.66]);
+  for (const x of [-arena.x, arena.x]) slab(x,.02,0,.18,depth,[.41,.56,.53]);
+  for (const z of [-arena.z, arena.z]) slab(0,.02,z,width,.18,z > 0 ? [.37,.65,.58] : [.55,.37,.35]);
   const teams = [
     {body:[.25,.66,.57], rim:[.58,1,.87], cap:[.17,.46,.41], ghost:[.44,.92,.79]},
     {body:[.76,.35,.28], rim:[1,.67,.55], cap:[.58,.24,.20], ghost:[1,.43,.34]}
@@ -773,10 +820,10 @@ function createRenderer(scene) {
     if (life <= 0) return;
     const color = teams[model.team];
     const radius = circle.radius * (model.hp === 0 ? .55 + .45 * life : 1);
-    const swing = Math.sin((model.swing || 0) / .16 * Math.PI) * .24;
+    const swing = Math.sin((model.swing || 0) / .16 * Math.PI) * .17;
     const x = model.x + (model.aimX || 0) * swing;
     const z = model.z + (model.aimZ || 0) * swing;
-    const height = (.58 + swing * .35) * life;
+    const height = (.40 + swing * .35) * life;
     if (ghost) {
       const tone = allowed ? color.ghost : teams[1].ghost;
       draw('body',x,.025,z,radius,height,radius,[...tone,.26],1);
@@ -784,7 +831,7 @@ function createRenderer(scene) {
       draw('disk',x,height+.081,z,radius * .69,0,radius * .69,[.11,.21,.20,.81]);
       return;
     }
-    draw('disk',x+.15,.021,z+.19,radius * 1.16,0,radius * 1.09,[.04,.08,.09,.68 * life]);
+    draw('disk',x+.10,.021,z+.13,radius * 1.16,0,radius * 1.09,[.04,.08,.09,.68 * life]);
     draw('body',x,.024,z,radius,height,radius,[...color.body,life],1);
     draw('body',x,height+.024,z,radius * .94,.079*life,radius * .94,[...color.rim,life],1);
     const cap = model.hurt > .08 ? [1,.94,.83] : color.cap;
@@ -805,12 +852,27 @@ function drawMarks(ctx, units, preview, valid) {
   ctx.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
   ctx.clearRect(0, 0, camera.w, camera.h);
   ctx.textAlign = 'center';
+  if (camera.scale < 4) {
+    const radius = Math.max(1.6, circle.radius * camera.scale);
+    for (const [models, isPreview] of [[units, false], [preview, true]]) {
+      ctx.globalAlpha = isPreview ? .72 : 1;
+      for (const model of models) {
+        if (model.hp === 0) continue;
+        const point = project(model.x, .4, model.z);
+        ctx.fillStyle = model.team === 1 || (isPreview && !valid) ? '#ffab97' : '#8cebd6';
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, radius, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
   if (state.phase === 'deploy') {
-    const enemyTag = project(0,0,-6.4);
-    const allyTag = project(0,0,13.45);
+    const enemyTag = project(0,0,-arena.z * .74);
+    const allyTag = project(0,0,arena.z * .76);
     ctx.font = '700 ' + clamp(camera.scale * .94, 10, 13) + 'px system-ui';
     ctx.fillStyle = '#dcb3aa';
-    ctx.fillText('적 중앙선', enemyTag.x, enemyTag.y);
+    ctx.fillText('적 배치 구역', enemyTag.x, enemyTag.y);
     ctx.fillStyle = '#9bd5c9';
     ctx.fillText('아군 배치 구역', allyTag.x, allyTag.y);
     if (preview.length) {
@@ -847,8 +909,6 @@ function boot() {
     camera.w = Math.max(width, 1);
     camera.h = Math.max(height, 1);
     camera.dpr = Math.min(devicePixelRatio || 1, 2);
-    const base = basePitch();
-    camera.pitchOffset = clamp(base + camera.pitchOffset, .35, 1.41) - base;
     updateCamera();
     for (const canvas of [ui.arena, ui.marks]) {
       canvas.width = Math.round(camera.w * camera.dpr);
