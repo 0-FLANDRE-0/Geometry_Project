@@ -196,9 +196,10 @@ const circle = Object.freeze({ hp: 200, damage: 75, defense: .10, penetration: 0
 const triangle = Object.freeze({ hp: 120, damage: 100, defense: 0, penetration: .20,
   radius: circle.radius, moveSpeed: circle.moveSpeed, attackGap: 1.2, attackRange: 10,
   approachRange: 9, projectileSpeed: circle.moveSpeed * 2 });
-const piercing = Object.freeze({ hp: 75, damage: 145, defense: .02, penetration: .28,
+const piercing = Object.freeze({ hp: 75, damage: 95, defense: .02, penetration: .28,
   width: 1, length: 1.45, radius: Math.hypot(.5, .725), box: true, shape: 'triangle',
-  moveSpeed: 2.90, attackGap: 1.35, attackRange: 11.5, approachRange: 10.5, projectileSpeed: 7.85, projectileHits: 2 });
+  moveSpeed: 2.90, attackGap: 1.35, attackRange: 11.5, approachRange: 10.5, projectileSpeed: 7.85,
+  projectileHits: 2, pierceDamageRetention: .8 });
 const spread = Object.freeze({ hp: 120, damage: 55, defense: 0, penetration: .25,
   width: 1.45, length: 1, radius: Math.hypot(.725, .5), box: true, shape: 'triangle',
   moveSpeed: 3, attackGap: 1, attackRange: 8.5, approachRange: 7.5, projectileSpeed: 5.15, homingTurnRate: Math.PI * 4 / 3,
@@ -831,7 +832,9 @@ function advanceProjectiles(living, damage) {
     }
     const distance = Math.min(projectile.remaining, projectile.attack.projectileSpeed * tick);
     for (let hit; (hit = firstProjectileHit(projectile, distance, living));) {
-      damage[hit.target.id] += damageAgainst(projectile.attack, hit.target);
+      const priorHits = projectile.hit?.size;
+      const damageScale = priorHits ? (projectile.attack.pierceDamageRetention ?? 1) ** priorHits : 1;
+      damage[hit.target.id] += damageAgainst(projectile.attack, hit.target) * damageScale;
       if (!projectile.hit) return false;
       projectile.hit.add(hit.target.id);
       if (projectile.hit.size >= projectile.attack.projectileHits) return false;
