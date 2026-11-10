@@ -219,7 +219,7 @@ const trapezoid = Object.freeze({ hp: 180, damage: 52, defense: .15, penetration
   attackRange: 3.25, approachRange: 1.5, attackHalfAngle: Math.PI / 3, maxTargets: 3 });
 const hexagon = Object.freeze({ large: true, hp: 280, damage: 165, defense: .05, penetration: .15,
   radius: 2.15 / 2, moveSpeed: 1.85, attackGap: 3.8, attackRange: 32.5, minAttackRange: 6,
-  retreatRange: 6.5, projectileSpeed: 8.2,
+  retreatRange: 8, projectileSpeed: 8.2,
   scatterRadius: 4.5, blastRadius: 2.65, coreRadius: 1.5, edgeDamage: 75, edgePenetration: .05,
   escortable: true });
 const pentagon = Object.freeze({ large: true, hp: 450, damage: 380, defense: .55, penetration: .65,
@@ -393,7 +393,12 @@ const diamondChaseMargin = 3;
 const diamondLargeMaxDefense = .50;
 const escortAlertRange = 4.5;
 const escortLeashRange = 6;
-const escortOffset = 2;
+const escortSlotPitch = 2.35;
+const escortSlotOffsets = [
+  [0, 1], [1, 1], [-1, 1], [1, 0], [-1, 0], [0, -1], [1, -1], [-1, -1],
+  [0, 2], [1, 2], [-1, 2], [2, 1], [-2, 1], [2, 0], [-2, 0], [2, -1], [-2, -1],
+  [0, -2], [1, -2], [-1, -2], [2, 2], [-2, 2], [2, -2], [-2, -2]
+];
 const maxUnitRadius = Math.max(...Object.values(unitTypes).map(spec => spec.radius));
 const collisionCellSize = 2 * maxUnitRadius;
 const collisionCols = Math.ceil(2 * arena.x / collisionCellSize);
@@ -541,7 +546,8 @@ function steer(unit, spec, living, dx, dz, gap) {
     const separation = spec.radius + unitTypes[other.type].radius;
     if (along > .035 && along < Math.min(forward, separation + .42) && Math.abs(lateral) < separation * .88) {
       forward = along;
-      side = Math.abs(lateral) > .018 ? -Math.sign(lateral) : (unit.id % 2 ? 1 : -1);
+      const sharedTurn = spec.escort && unitTypes[other.type].escort;
+      side = Math.abs(lateral) > .018 ? -Math.sign(lateral) : (sharedTurn || unit.id % 2 ? 1 : -1);
     }
   }
   if (side) [dx, dz] = [dx - dz * side * .82, dz + dx * side * .82];
@@ -549,58 +555,112 @@ function steer(unit, spec, living, dx, dz, gap) {
   unit.vx = dx * step;
   unit.vz = dz * step;
 }
-function moveEscort(unit, spec, living, escortable, rooted) {
-  if (!(unit.protectedAlly?.hp > 0)) {
-    let distance = Infinity;
-    unit.protectedAlly = null;
-    unit.escortThreat = null;
-    for (const ally of escortable) {
-      if (ally.team !== unit.team) continue;
-      const d2 = distance2(unit, ally);
-      if (d2 >= distance) continue;
-      distance = d2;
-      unit.protectedAlly = ally;
+function escortSlotPoint(ally, offset) {
+  return {type: 'escort', team: ally.team, x: ally.x + offset.x, z: ally.z + offset.z};
+}
+function assignEscortSlots(living) {
+  const guards = living.filter(unit => unitTypes[unit.type].escort);
+  if (!guards.length) return;
+  const escortable = living.filter(unit => unitTypes[unit.type].escortable);
+  const reserved = [], pending = [];
+  const available = (point, clearance, occupants) =>
+    Math.abs(point.x) <= arena.x - escort.radius && Math.abs(point.z) <= arena.z - escort.radius
+    && !reserved.some(slot => slot.team === point.team && distance2(point, slot) < clearance ** 2)
+    && !occupants.some(ally => ally.team === point.team && !unitTypes[ally.type].escort && bodiesTooClose(point, ally, .12));
+  // Reserve valid existing positions before assigning the vacant ones.
+  for (const guard of guards) {
+    if (guard.protectedAlly?.hp > 0 && guard.escortSlot) {
+      const point = escortSlotPoint(guard.protectedAlly, guard.escortSlot);
+      if (available(point, 1.8, escortable)) {
+        reserved.push(point);
+        continue;
+      }
+    } else if ((guard.escortRetryAt ?? 0) > state.elapsed && guard.protectedAlly?.hp !== 0) continue;
+    pending.push(guard);
+  }
+  for (const guard of pending) {
+    guard.escortSlot = null;
+    guard.escortSettled = false;
+    guard.escortRetryAt = state.elapsed + .5;
+    if (!(guard.protectedAlly?.hp > 0)) {
+      guard.protectedAlly = null;
+      guard.escortThreat = null;
+      let nearest = Infinity;
+      for (const ally of escortable) {
+        if (ally.team !== guard.team) continue;
+        const d2 = distance2(guard, ally);
+        if (d2 >= nearest) continue;
+        nearest = d2;
+        guard.protectedAlly = ally;
+      }
     }
-    if (!unit.protectedAlly) return false;
-    const side = unit.team === 0 ? -1 : 1;
-    unit.escortSide = clamp((unit.x - unit.protectedAlly.x) * side, -1.25, 1.25);
+    const ally = guard.protectedAlly;
+    if (!ally) continue;
+    const side = guard.x < ally.x ? -1 : 1;
+    const front = guard.team === 0 ? -1 : 1;
+    let nearest = Infinity;
+    for (const [index, [col, row]] of escortSlotOffsets.entries()) {
+      if (index >= 3 && guard.escortSlot) break;
+      const offset = {x: col * side * escortSlotPitch, z: row * front * escortSlotPitch};
+      const point = escortSlotPoint(ally, offset);
+      if (!available(point, 2.05, living)) continue;
+      const distance = distance2(guard, point);
+      if (distance >= nearest) continue;
+      nearest = distance;
+      guard.escortSlot = offset;
+    }
+    if (guard.escortSlot) reserved.push(escortSlotPoint(ally, guard.escortSlot));
   }
+}
+function escortThreatNear(ally, slot, living) {
+  const retreatRange = unitTypes[ally.type].retreatRange ?? 0;
+  const alertRange = Math.max(escortAlertRange, retreatRange);
+  const leashRange = Math.max(escortLeashRange, retreatRange);
+  let threat = null, closest = Infinity;
+  for (const enemy of living) {
+    if (enemy.team === ally.team) continue;
+    const range2 = distance2(ally, enemy);
+    if (range2 >= closest || range2 > leashRange ** 2) continue;
+    if (range2 > alertRange ** 2 && (!slot || distance2(slot, enemy) > escortAlertRange ** 2)) continue;
+    threat = enemy;
+    closest = range2;
+  }
+  return threat;
+}
+function moveEscort(unit, spec, living, rooted) {
   const ally = unit.protectedAlly;
-  const {target, range2} = closestEnemy(ally, living);
-  if (range2 <= escortAlertRange ** 2) {
-    unit.escortThreat = target;
-  } else if (!(unit.escortThreat?.hp > 0) || distance2(ally, unit.escortThreat) > escortLeashRange ** 2) {
-    unit.escortThreat = null;
+  if (!ally) return false;
+  const slot = unit.escortSlot && escortSlotPoint(ally, unit.escortSlot);
+  const leashRange = Math.max(escortLeashRange, unitTypes[ally.type].retreatRange ?? 0);
+  if (!(unit.escortThreat?.hp > 0) || distance2(ally, unit.escortThreat) > leashRange ** 2) {
+    unit.escortThreat = escortThreatNear(ally, slot, living);
   }
-  if (!target) return true;
-  const threat = unit.escortThreat ?? target;
-  if (threat.x !== unit.x || threat.z !== unit.z) {
-    unit.heading = turnTowards(facingOf(unit), Math.atan2(threat.x - unit.x, threat.z - unit.z), Math.PI * 3 * tick);
-  }
+  const threat = unit.escortThreat;
+  const heading = threat ? Math.atan2(threat.x - unit.x, threat.z - unit.z) : teamHeading(unit);
+  unit.heading = turnTowards(facingOf(unit), heading, Math.PI * 3 * tick);
   if (rooted) return true;
-  let x = threat.x, z = threat.z, tolerance = 1e-8;
-  if (unit.escortThreat) {
+  if (threat) {
+    unit.escortSettled = false;
     if (attackInRange(unit, threat, spec, distance2(unit, threat))) return true;
-  } else {
-    const heading = range2 > 1e-8 ? Math.atan2(target.x - ally.x, target.z - ally.z) : teamHeading(unit);
-    const dx = Math.sin(heading), dz = Math.cos(heading);
-    x = clamp(ally.x + dx * escortOffset + dz * unit.escortSide, -arena.x + spec.radius, arena.x - spec.radius);
-    z = clamp(ally.z + dz * escortOffset - dx * unit.escortSide, -arena.z + spec.radius, arena.z - spec.radius);
-    tolerance = .15;
   }
-  const dx = x - unit.x, dz = z - unit.z;
+  const destination = threat ?? slot;
+  if (!destination) return true;
+  const dx = destination.x - unit.x, dz = destination.z - unit.z;
   const distance = Math.hypot(dx, dz);
-  if (distance > tolerance) steer(unit, spec, living, dx / distance, dz / distance, distance - tolerance);
+  const tolerance = threat ? 1e-8 : .22;
+  if (!threat && unit.escortSettled && distance <= .42) return true;
+  unit.escortSettled = !threat && distance <= tolerance + 1e-8;
+  if (distance > tolerance && !unit.escortSettled) steer(unit, spec, living, dx / distance, dz / distance, distance - tolerance);
   return true;
 }
 function moveUnits(living) {
-  let escortable;
+  assignEscortSlots(living);
   for (const unit of living) {
     unit.vx = unit.vz = 0;
     const spec = unitTypes[unit.type];
     const rooted = unit.rootedUntil > state.elapsed + 1e-8;
     if (rooted && !spec.box) continue;
-    if (spec.escort && moveEscort(unit, spec, living, escortable ??= living.filter(ally => unitTypes[ally.type].escortable), rooted)) continue;
+    if (spec.escort && moveEscort(unit, spec, living, rooted)) continue;
     const nearest = closestEnemy(unit, living);
     if (!nearest.target) continue;
     const {target, range2} = unit.type === 'diamond'
