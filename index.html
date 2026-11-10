@@ -213,7 +213,8 @@ const trapezoid = Object.freeze({ hp: 180, damage: 52, defense: .15, penetration
   radius: circle.radius, width: 1.25, length: 1, moveSpeed: 2.5, attackGap: .90,
   attackRange: 3.25, approachRange: 1.5, attackHalfAngle: Math.PI / 3, maxTargets: 3 });
 const hexagon = Object.freeze({ hp: 280, damage: 165, defense: .05, penetration: .15,
-  radius: 2.15 / 2, moveSpeed: 1.85, attackGap: 3.8, attackRange: 32.5, projectileSpeed: 8.2,
+  radius: 2.15 / 2, moveSpeed: 1.85, attackGap: 3.8, attackRange: 32.5, minAttackRange: 6,
+  retreatRange: 6.5, projectileSpeed: 8.2,
   scatterRadius: 4.5, blastRadius: 2.65, coreRadius: 1.5, edgeDamage: 75, edgePenetration: .05 });
 const pentagon = Object.freeze({ hp: 450, damage: 380, defense: .55, penetration: .65,
   radius: 1.85 / 2, moveSpeed: 1.45, attackGap: 3.5, attackRange: 18, approachRange: 4,
@@ -487,12 +488,13 @@ function enemyByMaxHpWithin(unit, living, limit2, attack = null, preferHighHp = 
 }
 function densestEnemyWithin(unit, living, spec, counts) {
   let best = null, range2 = Infinity, bestCount = 0;
+  const minRange2 = (spec.minAttackRange ?? 0) ** 2;
   const limit2 = spec.attackRange ** 2;
   const blast2 = spec.blastRadius ** 2;
   for (const target of living) {
     if (target.team === unit.team) continue;
     const d2 = distance2(unit, target);
-    if (d2 > limit2) continue;
+    if (d2 < minRange2 || d2 > limit2) continue;
     let count = counts.get(target);
     if (count === undefined) {
       count = 0;
@@ -546,12 +548,33 @@ function moveUnits(living) {
       : Math.max(spec.approachRange, contact);
     const melee = spec.approachRange === undefined && !isRangedAttack(spec);
     const boxApproach = (spec.box || defender.box) && (melee || spec.approachRange === 0);
-    if (boxApproach) {
-      if (bodiesTooClose(unit, target, melee ? spec.attackRange - 2 * circle.radius : 1e-8)) continue;
-    } else if (range2 <= approachRange ** 2) continue;
+    const retreating = range2 < (spec.retreatRange ?? 0) ** 2 - 1e-8;
+    const closeEnough = boxApproach
+      ? bodiesTooClose(unit, target, melee ? spec.attackRange - 2 * circle.radius : 1e-8)
+      : range2 <= approachRange ** 2;
+    if (!retreating && closeEnough) continue;
     const range = Math.sqrt(range2);
-    let dx = (target.x - unit.x) / range;
-    let dz = (target.z - unit.z) / range;
+    let dx = range > 1e-8 ? (target.x - unit.x) / range : 0;
+    let dz = range > 1e-8 ? (target.z - unit.z) / range : Math.cos(teamHeading(unit));
+    if (retreating) {
+      dx = -dx;
+      dz = -dz;
+      // Retreat along an arena edge if the outward step is blocked.
+      const xBlocked = Math.abs(unit.x) >= arena.x - spec.radius - 1e-8 && unit.x * dx > 0;
+      const zBlocked = Math.abs(unit.z) >= arena.z - spec.radius - 1e-8 && unit.z * dz > 0;
+      if (xBlocked && zBlocked) continue;
+      if (xBlocked) {
+        dx = 0;
+        if (Math.abs(dz) < 1e-8) dz = unit.z > 0 ? -1 : 1;
+      }
+      if (zBlocked) {
+        dz = 0;
+        if (Math.abs(dx) < 1e-8) dx = unit.x > 0 ? -1 : 1;
+      }
+      const directionLength = Math.hypot(dx, dz);
+      dx /= directionLength;
+      dz /= directionLength;
+    }
     let forward = Infinity, side = 0;
     const maxSeparation = spec.radius + maxUnitRadius;
     const search2 = (maxSeparation + .42) ** 2 + (maxSeparation * .88) ** 2 + 1e-8;
@@ -569,7 +592,8 @@ function moveUnits(living) {
     }
     if (side) [dx, dz] = [dx - dz * side * .82, dz + dx * side * .82];
     const stopRange = boxApproach ? 0 : (spec.approachRange !== undefined || spec.projectileSpeed ? approachRange : contact);
-    const step = Math.min(spec.moveSpeed * tick, range - stopRange) / Math.hypot(dx, dz);
+    const gap = retreating ? spec.retreatRange - range : range - stopRange;
+    const step = Math.min(spec.moveSpeed * tick, gap) / Math.hypot(dx, dz);
     unit.vx = dx * step;
     unit.vz = dz * step;
     if (unit.type === 'diamond') unit.heading = Math.atan2(unit.vx, unit.vz);
