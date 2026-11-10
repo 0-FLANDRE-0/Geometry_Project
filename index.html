@@ -89,10 +89,10 @@ button:disabled { opacity: .37; cursor: default; }
 .result-card h1 { font-size: clamp(24px, 5vw, 43px); letter-spacing: -.055em; margin: 3px 0 4px; }
 .result-card p { margin: 0; color: var(--muted); font-size: 12px; }
 .error-card { color: var(--coral); pointer-events: auto; }
-@media (orientation: landscape) and (max-width: 1210px) {
-  .controls { max-width: 252px; }
-  .bar { display: grid; width: 252px; }
-  .unit-picker { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) 46px; }
+@media (orientation: landscape) and (max-width: 1270px) {
+  .controls { max-width: 302px; }
+  .bar { display: grid; width: 302px; }
+  .unit-picker { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) 46px minmax(0, 1fr); }
   .unit-picker .btn { padding-inline: 0; font-size: 10.5px; }
   .unit-picker [aria-hidden="true"] { display: none; }
   .field { display: flex; align-items: center; justify-content: space-between; }
@@ -146,6 +146,7 @@ button:disabled { opacity: .37; cursor: default; }
         <button class="btn" id="unit-trapezoid" type="button" aria-pressed="false"><svg width="11" height="9" viewBox="0 0 12 10" aria-hidden="true"><path fill="currentColor" d="M2 0h8l2 10H0z"/></svg> 사다리꼴</button>
         <button class="btn" id="unit-diamond" type="button" aria-pressed="false"><span aria-hidden="true">◆</span> 마름모</button>
         <button class="btn" id="unit-escort" type="button" aria-label="호위 마름모" title="호위 마름모" aria-pressed="false"><svg width="15" height="9" viewBox="0 0 15 9" aria-hidden="true"><path fill="currentColor" d="M7.5 0 15 4.5 7.5 9 0 4.5z"/></svg> 호위</button>
+        <button class="btn" id="unit-bomber" type="button" aria-label="자폭 마름모" title="자폭 마름모" aria-pressed="false"><svg width="7" height="13" viewBox="0 0 7 13" aria-hidden="true"><path fill="currentColor" d="M3.5 0 7 9 3.5 13 0 9z"/></svg> 자폭</button>
         <button class="btn" id="unit-hexagon" type="button" aria-pressed="false"><span aria-hidden="true">⬢</span> 육각형</button>
         <button class="btn" id="unit-pentagon" type="button" aria-pressed="false"><span aria-hidden="true">⬟</span> 오각형</button>
         <button class="btn" id="unit-octagon" type="button" aria-pressed="false"><svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M4 0h4l4 4v4l-4 4H4L0 8V4z"/></svg> 팔각형</button>
@@ -187,7 +188,7 @@ button:disabled { opacity: .37; cursor: default; }
 const byId = id => document.getElementById(id);
 const ui = Object.fromEntries([
   'arena', 'marks', 'hint', 'unit-circle', 'unit-triangle', 'unit-square', 'unit-diamond', 'unit-trapezoid', 'unit-hexagon',
-  'unit-pentagon', 'unit-octagon', 'unit-wall', 'unit-piercing', 'unit-spread', 'unit-escort',
+  'unit-pentagon', 'unit-octagon', 'unit-wall', 'unit-piercing', 'unit-spread', 'unit-escort', 'unit-bomber',
   'count', 'count-down', 'count-up', 'rows', 'rows-down', 'rows-up', 'undo', 'place',
   'start', 'deploy-bar', 'battle-bar', 'back', 'clock', 'result', 'verdict', 'summary', 'error',
   'zoom-out', 'zoom-in', 'view-reset', 'fullscreen', 'screen-notice'
@@ -214,6 +215,10 @@ const diamond = Object.freeze({ hp: 135, damage: 125, defense: 0, penetration: 0
 const escort = Object.freeze({ hp: 150, damage: 85, defense: .08, penetration: .02,
   width: 1.45, length: 1.05, radius: Math.hypot(.725, .525), box: true, shape: 'diamond',
   moveSpeed: 6.85, attackGap: 1.25, attackRange: circle.attackRange, escort: true });
+const bomber = Object.freeze({ hp: 42, damage: 210, defense: 0, penetration: .18,
+  width: .85, length: 1.65, radius: Math.hypot(.425, .825), box: true,
+  moveSpeed: 8.15, attackRange: circle.attackRange,
+  burst: Object.freeze({radius: 2.15, damage: 145, edgeDamage: 55, deathChance: .25}) });
 const trapezoid = Object.freeze({ hp: 180, damage: 52, defense: .15, penetration: .05,
   radius: circle.radius, width: 1.25, length: 1, moveSpeed: 2.5, attackGap: .90,
   attackRange: 3.25, approachRange: 1.5, attackHalfAngle: Math.PI / 3, maxTargets: 3 });
@@ -231,8 +236,11 @@ const octagon = Object.freeze({ large: true, hp: 1000, damage: 25, defense: .80,
 const wall = Object.freeze({ hp: 500, damage: 10, defense: .55, penetration: .05,
   width: 1.65, length: 1, radius: Math.hypot(.825, .5), moveSpeed: 3.06, attackGap: 1,
   attackRange: circle.attackRange, box: true, shape: 'square', rootOnMeleeHit: .5, enemyPushWeight: .25 });
-const unitTypes = Object.freeze({circle, triangle, piercing, spread, square, diamond, escort, trapezoid, hexagon, pentagon, octagon, wall});
-const trapezoidCorners = [[-.68, 1], [.68, 1], [1, -1], [-1, -1]];
+const unitTypes = Object.freeze({circle, triangle, piercing, spread, square, diamond, escort, bomber, trapezoid, hexagon, pentagon, octagon, wall});
+const customCorners = {
+  trapezoid: [[-.68, 1], [.68, 1], [1, -1], [-1, -1]],
+  bomber: [[0, 1], [1, -.35], [0, -1], [-1, -.35]]
+};
 const projectileRadius = .16;
 const shellRadius = .24;
 const shellTrailLength = 1.65;
@@ -391,6 +399,7 @@ ui.back.addEventListener('click', () => {
 const tick = 1 / 60;
 const diamondChaseMargin = 3;
 const diamondLargeMaxDefense = .50;
+const bomberChaseMargin = 3;
 const escortAlertRange = 4.5;
 const escortLeashRange = 6;
 const escortSlotPitch = 2.35;
@@ -503,11 +512,9 @@ function enemyByPriorityWithin(unit, living, limit2, priority, attack = null) {
   }
   return {target: best, range2};
 }
-function densestEnemyWithin(unit, living, spec, counts) {
+function densestEnemyWithin(unit, living, blastRadius, limit2, counts, minRange2 = 0) {
   let best = null, range2 = Infinity, bestCount = 0;
-  const minRange2 = (spec.minAttackRange ?? 0) ** 2;
-  const limit2 = spec.attackRange ** 2;
-  const blast2 = spec.blastRadius ** 2;
+  const blast2 = blastRadius ** 2;
   for (const target of living) {
     if (target.team === unit.team) continue;
     const d2 = distance2(unit, target);
@@ -655,6 +662,7 @@ function moveEscort(unit, spec, living, rooted) {
 }
 function moveUnits(living) {
   assignEscortSlots(living);
+  let bomberDensity;
   for (const unit of living) {
     unit.vx = unit.vz = 0;
     const spec = unitTypes[unit.type];
@@ -663,9 +671,14 @@ function moveUnits(living) {
     if (spec.escort && moveEscort(unit, spec, living, rooted)) continue;
     const nearest = closestEnemy(unit, living);
     if (!nearest.target) continue;
-    const {target, range2} = unit.type === 'diamond'
-      ? enemyByPriorityWithin(unit, living, (Math.sqrt(nearest.range2) + diamondChaseMargin) ** 2, diamondTargetPriority)
-      : nearest;
+    let focus = nearest;
+    if (unit.type === 'diamond') {
+      focus = enemyByPriorityWithin(unit, living, (Math.sqrt(nearest.range2) + diamondChaseMargin) ** 2, diamondTargetPriority);
+    } else if (spec.burst) {
+      const limit2 = (Math.sqrt(nearest.range2) + bomberChaseMargin) ** 2;
+      focus = densestEnemyWithin(unit, living, spec.burst.radius, limit2, bomberDensity ??= new Map());
+    }
+    const {target, range2} = focus;
     if (spec.box && !spec.projectileSpeed) {
       const attackTarget = range2 <= attackReach(spec, maxUnitRadius) ** 2 && !attackInRange(unit, target, spec, range2)
         ? closestEnemy(unit, living, spec).target
@@ -995,6 +1008,36 @@ function applyMeleeHit(attacker, target, spec, damage) {
   const duration = unitTypes[target.type].rootOnMeleeHit;
   if (duration) attacker.rootedUntil = Math.max(attacker.rootedUntil ?? 0, state.elapsed + duration);
 }
+function detonate(unit, direct, living, damage) {
+  const spec = unitTypes[unit.type];
+  const {radius, damage: centerDamage, edgeDamage} = spec.burst;
+  state.impacts.push({x: unit.x, z: unit.z, team: unit.team, radius, remaining: impactDuration});
+  if (direct) damage[direct.id] += damageAgainst(spec, direct);
+  const radius2 = radius ** 2;
+  for (const target of living) {
+    if (target.team === unit.team || target === direct || target.hp <= 0) continue;
+    const d2 = distance2(unit, target);
+    if (d2 > radius2) continue;
+    damage[target.id] += damageAgainst({
+      damage: lerp(centerDamage, edgeDamage, Math.sqrt(d2) / radius), penetration: spec.penetration
+    }, target);
+  }
+}
+function resolveDamage(living, damage, spent) {
+  const deathBursts = [];
+  for (const unit of living) {
+    if (!damage[unit.id] || unit.hp <= 0) continue;
+    unit.hp = Math.max(0, unit.hp - damage[unit.id]);
+    unit.hurt = .18;
+    if (unit.hp === 0) {
+      unit.fade = .23;
+      state.alive[unit.team]--;
+      const burst = unitTypes[unit.type].burst;
+      if (burst && !spent?.has(unit) && Math.random() < burst.deathChance) deathBursts.push(unit);
+    }
+  }
+  return deathBursts;
+}
 function sweepAttack(unit, spec, living, damage) {
   const hits = [];
   const range2 = spec.attackRange ** 2;
@@ -1069,13 +1112,34 @@ function simulate() {
   const damage = new Float32Array(state.units.length);
   advanceProjectiles(living, damage);
   advanceWaves(living, damage);
+  let contactBursts;
+  // Resolve contact before this tick's new attacks, but after already traveling shots.
+  for (const unit of living) {
+    const spec = unitTypes[unit.type];
+    if (!spec.burst || damage[unit.id] >= unit.hp) continue;
+    const {target} = closestEnemy(unit, living, spec);
+    if (target) (contactBursts ??= []).push({unit, target});
+  }
+  let spent;
+  if (contactBursts) {
+    spent = new Set();
+    for (const {unit, target} of contactBursts) {
+      spent.add(unit);
+      detonate(unit, target, living, damage);
+      damage[unit.id] += unit.hp;
+    }
+  }
   let densityCounts;
   for (const unit of living) {
+    const spec = unitTypes[unit.type];
+    if (spec.burst) continue;
     unit.cooldown = Math.max(0, unit.cooldown - tick);
     if (unit.cooldown > 1e-8) continue;
-    const spec = unitTypes[unit.type];
     let aim;
-    if (spec.blastRadius) aim = densestEnemyWithin(unit, living, spec, densityCounts ??= new Map());
+    if (spec.blastRadius) {
+      aim = densestEnemyWithin(unit, living, spec.blastRadius, spec.attackRange ** 2,
+        densityCounts ??= new Map(), spec.minAttackRange ** 2);
+    }
     else if (spec.hitscan) aim = enemyByPriorityWithin(unit, living, Infinity, target => target.hp, spec);
     else if (unit.type === 'diamond') aim = enemyByPriorityWithin(unit, living, Infinity, diamondTargetPriority, spec);
     else if (unit.escortThreat && attackInRange(unit, unit.escortThreat, spec, distance2(unit, unit.escortThreat))) {
@@ -1108,14 +1172,12 @@ function simulate() {
       else applyMeleeHit(unit, target, spec, damage);
     }
   }
-  for (const unit of living) {
-    if (!damage[unit.id]) continue;
-    unit.hp = Math.max(0, unit.hp - damage[unit.id]);
-    unit.hurt = .18;
-    if (unit.hp === 0) {
-      unit.fade = .23;
-      state.alive[unit.team]--;
-    }
+  // Resolve each wave of death bursts together. Already defeated units cannot roll again.
+  let deathBursts = resolveDamage(living, damage, spent);
+  while (deathBursts.length) {
+    damage.fill(0);
+    for (const unit of deathBursts) detonate(unit, null, living, damage);
+    deathBursts = resolveDamage(living, damage);
   }
   const tenths = Math.floor(state.elapsed * 10);
   if (tenths !== state.clockTenths) {
@@ -1378,6 +1440,8 @@ function createThreeScene(three, context) {
 
   const squareBody = new three.CylinderGeometry(1, 1, 1, 4, 1, false, Math.PI / 4).translate(0, .5, 0);
   const squareCap = new three.CircleGeometry(1, 4, -Math.PI / 4).rotateX(-Math.PI / 2);
+  const diamondBody = new three.CylinderGeometry(1, 1, 1, 4).translate(0, .5, 0);
+  const diamondCap = new three.CircleGeometry(1, 4, -Math.PI / 2).rotateX(-Math.PI / 2);
   function trapezoidGeometry(squareGeometry) {
     const geometry = squareGeometry.toNonIndexed();
     const positions = geometry.getAttribute('position');
@@ -1385,8 +1449,17 @@ function createThreeScene(three, context) {
       const side = Math.sign(positions.getX(i));
       if (!side) continue;
       const front = positions.getZ(i) > 0;
-      positions.setX(i, side * (front ? trapezoidCorners[1][0] : 1));
+      positions.setX(i, side * (front ? customCorners.trapezoid[1][0] : 1));
       positions.setZ(i, front ? 1 : -1);
+    }
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+  function bomberGeometry(diamondGeometry) {
+    const geometry = diamondGeometry.toNonIndexed();
+    const positions = geometry.getAttribute('position');
+    for (let i = 0; i < positions.count; i++) {
+      if (Math.abs(positions.getX(i)) > .5) positions.setZ(i, customCorners.bomber[1][1]);
     }
     geometry.computeVertexNormals();
     return geometry;
@@ -1399,8 +1472,10 @@ function createThreeScene(three, context) {
     'triangle-cap': new three.CircleGeometry(1, 3, -Math.PI / 2).rotateX(-Math.PI / 2),
     square: squareBody,
     'square-cap': squareCap,
-    diamond: new three.CylinderGeometry(1, 1, 1, 4).translate(0, .5, 0),
-    'diamond-cap': new three.CircleGeometry(1, 4, -Math.PI / 2).rotateX(-Math.PI / 2),
+    diamond: diamondBody,
+    'diamond-cap': diamondCap,
+    bomber: bomberGeometry(diamondBody),
+    'bomber-cap': bomberGeometry(diamondCap),
     trapezoid: trapezoidGeometry(squareBody),
     'trapezoid-cap': trapezoidGeometry(squareCap),
     hexagon: new three.CylinderGeometry(1, 1, 1, 6).translate(0, .5, 0),
@@ -1481,6 +1556,7 @@ function createCanvasScene(ctx) {
     triangle: 3, 'triangle-cap': 3,
     square: 4, 'square-cap': 4,
     diamond: 4, 'diamond-cap': 4,
+    bomber: 4, 'bomber-cap': 4,
     trapezoid: 4, 'trapezoid-cap': 4,
     pentagon: 5, 'pentagon-cap': 5,
     hexagon: 6, 'hexagon-cap': 6,
@@ -1512,13 +1588,13 @@ function createCanvasScene(ctx) {
       const sides = polygonSides[shape];
       if (sides) {
         const isSquare = shape === 'square' || shape === 'square-cap';
-        const isTrapezoid = shape === 'trapezoid' || shape === 'trapezoid-cap';
+        const outline = customCorners[shape.replace(/-cap$/, '')];
         const firstCorner = isSquare ? Math.PI / 4 : 0;
         const sinHeading = Math.sin(heading), cosHeading = Math.cos(heading);
         const corners = Array.from({length: sides}, (_, i) => {
           const angle = firstCorner + i * 2 * Math.PI / sides;
-          const px = sx * (isTrapezoid ? trapezoidCorners[i][0] : Math.sin(angle));
-          const pz = sz * (isTrapezoid ? trapezoidCorners[i][1] : Math.cos(angle));
+          const px = sx * (outline?.[i][0] ?? Math.sin(angle));
+          const pz = sz * (outline?.[i][1] ?? Math.cos(angle));
           return {x: x + px * cosHeading + pz * sinHeading, z: z - px * sinHeading + pz * cosHeading};
         });
         const tops = corners.map(p => project(p.x, y + sy, p.z));
@@ -1634,12 +1710,12 @@ function polygonMark(ctx, model, y, radius, sides, widthRatio = 1) {
   const heading = (model.heading ?? (model.team === 0 ? Math.PI : 0)) - camera.yaw;
   const angle = Math.atan2(camera.sin * Math.cos(heading), Math.sin(heading));
   const cos = Math.cos(angle), sin = Math.sin(angle);
-  const isTrapezoid = model.type === 'trapezoid';
+  const outline = customCorners[model.type];
   const firstCorner = (unitTypes[model.type]?.shape ?? model.type) === 'square' ? Math.PI / 4 : 0;
   fillPolygon(ctx, Array.from({length: sides}, (_, i) => {
     const vertex = firstCorner + i * 2 * Math.PI / sides;
-    const forward = radius * (isTrapezoid ? trapezoidCorners[i][1] : Math.cos(vertex));
-    const side = radius * widthRatio * (isTrapezoid ? trapezoidCorners[i][0] : Math.sin(vertex));
+    const forward = radius * (outline?.[i][1] ?? Math.cos(vertex));
+    const side = radius * widthRatio * (outline?.[i][0] ?? Math.sin(vertex));
     return {x: point.x + forward * cos - side * sin, y: point.y + forward * sin + side * cos};
   }));
 }
@@ -1859,7 +1935,7 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
         if (model.type === 'triangle') polygonMark(ctx, model, .4, radius + .35, 3);
         else if (spec.shape === 'triangle') polygonMark(ctx, model, .4, (radius + .35) * spec.length, 3, spec.width / spec.length);
         else if (model.type === 'square') polygonMark(ctx, model, .4, radius * Math.SQRT2, 4);
-        else if ((spec.shape ?? model.type) === 'diamond') polygonMark(ctx, model, .4, radius * spec.length, 4, spec.width / spec.length);
+        else if ((spec.shape ?? model.type) === 'diamond' || spec.burst) polygonMark(ctx, model, .4, radius * spec.length, 4, spec.width / spec.length);
         else if (model.type === 'trapezoid') polygonMark(ctx, model, .4, radius, 4, trapezoid.width);
         else if (model.type === 'hexagon') polygonMark(ctx, model, .4, radius * hexagon.radius / circle.radius, 6);
         else if (model.type === 'pentagon') polygonMark(ctx, model, .4, radius * pentagon.radius / circle.radius, 5);
