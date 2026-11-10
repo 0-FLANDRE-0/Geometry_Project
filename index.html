@@ -89,7 +89,7 @@ button:disabled { opacity: .37; cursor: default; }
 .result-card h1 { font-size: clamp(24px, 5vw, 43px); letter-spacing: -.055em; margin: 3px 0 4px; }
 .result-card p { margin: 0; color: var(--muted); font-size: 12px; }
 .error-card { color: var(--coral); pointer-events: auto; }
-@media (orientation: landscape) and (max-width: 1270px) {
+@media (orientation: landscape) and (max-width: 1320px) {
   .controls { max-width: 302px; }
   .bar { display: grid; width: 302px; }
   .unit-picker { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) 46px minmax(0, 1fr); }
@@ -148,6 +148,7 @@ button:disabled { opacity: .37; cursor: default; }
         <button class="btn" id="unit-escort" type="button" aria-label="호위 마름모" title="호위 마름모" aria-pressed="false"><svg width="15" height="9" viewBox="0 0 15 9" aria-hidden="true"><path fill="currentColor" d="M7.5 0 15 4.5 7.5 9 0 4.5z"/></svg> 호위</button>
         <button class="btn" id="unit-bomber" type="button" aria-label="자폭 마름모" title="자폭 마름모" aria-pressed="false"><svg width="7" height="13" viewBox="0 0 7 13" aria-hidden="true"><path fill="currentColor" d="M3.5 0 7 9 3.5 13 0 9z"/></svg> 자폭</button>
         <button class="btn" id="unit-hexagon" type="button" aria-pressed="false"><span aria-hidden="true">⬢</span> 육각형</button>
+        <button class="btn" id="unit-fieldHexagon" type="button" aria-label="장판형 육각형" title="장판형 육각형" aria-pressed="false"><span aria-hidden="true">⬡</span> 장판</button>
         <button class="btn" id="unit-pentagon" type="button" aria-pressed="false"><span aria-hidden="true">⬟</span> 오각형</button>
         <button class="btn" id="unit-octagon" type="button" aria-pressed="false"><svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M4 0h4l4 4v4l-4 4H4L0 8V4z"/></svg> 팔각형</button>
         <button class="btn" id="unit-wall" type="button" aria-label="방벽 직사각형" title="방벽 직사각형" aria-pressed="false"><span aria-hidden="true">▬</span> 방벽</button>
@@ -188,7 +189,7 @@ button:disabled { opacity: .37; cursor: default; }
 const byId = id => document.getElementById(id);
 const ui = Object.fromEntries([
   'arena', 'marks', 'hint', 'unit-circle', 'unit-triangle', 'unit-square', 'unit-diamond', 'unit-trapezoid', 'unit-hexagon',
-  'unit-pentagon', 'unit-octagon', 'unit-wall', 'unit-piercing', 'unit-spread', 'unit-escort', 'unit-bomber',
+  'unit-pentagon', 'unit-octagon', 'unit-wall', 'unit-piercing', 'unit-spread', 'unit-escort', 'unit-bomber', 'unit-fieldHexagon',
   'count', 'count-down', 'count-up', 'rows', 'rows-down', 'rows-up', 'undo', 'place',
   'start', 'deploy-bar', 'battle-bar', 'back', 'clock', 'result', 'verdict', 'summary', 'error',
   'zoom-out', 'zoom-in', 'view-reset', 'fullscreen', 'screen-notice'
@@ -227,6 +228,8 @@ const hexagon = Object.freeze({ large: true, hp: 280, damage: 165, defense: .05,
   retreatRange: 8, projectileSpeed: 8.2,
   scatterRadius: 4.5, blastRadius: 2.65, coreRadius: 1.5, edgeDamage: 75, edgePenetration: .05,
   escortable: true });
+const fieldHexagon = Object.freeze({ ...hexagon, shape: 'hexagon', damage: 75, edgeDamage: 45, attackGap: 5.2,
+  field: Object.freeze({radius: 3.85, damage: 7.5, penetration: hexagon.edgePenetration, pulses: 10}) });
 const pentagon = Object.freeze({ large: true, hp: 450, damage: 380, defense: .55, penetration: .65,
   radius: 1.85 / 2, moveSpeed: 1.45, attackGap: 3.5, attackRange: 18, approachRange: 4,
   hitscan: true, splashRadius: .8, splashDamage: 55 });
@@ -236,7 +239,7 @@ const octagon = Object.freeze({ large: true, hp: 1000, damage: 25, defense: .80,
 const wall = Object.freeze({ hp: 500, damage: 10, defense: .55, penetration: .05,
   width: 1.65, length: 1, radius: Math.hypot(.825, .5), moveSpeed: 3.06, attackGap: 1,
   attackRange: circle.attackRange, box: true, shape: 'square', rootOnMeleeHit: .5, enemyPushWeight: .25 });
-const unitTypes = Object.freeze({circle, triangle, piercing, spread, square, diamond, escort, bomber, trapezoid, hexagon, pentagon, octagon, wall});
+const unitTypes = Object.freeze({circle, triangle, piercing, spread, square, diamond, escort, bomber, trapezoid, hexagon, fieldHexagon, pentagon, octagon, wall});
 const customCorners = {
   trapezoid: [[-.68, 1], [.68, 1], [1, -1], [-1, -1]],
   bomber: [[0, 1], [1, -.35], [0, -1], [-1, -.35]]
@@ -248,7 +251,7 @@ const impactDuration = .48;
 const hitscanTraceDuration = .18;
 const arena = { x: 35, z: 35 };
 const deploy = {type: 'circle', count: 10, rows: 2, anchor: null, groups: [], units: [], ready: false, preview: null};
-const state = {phase: 'deploy', elapsed: 0, clockTenths: -1, units: [], projectiles: [], waves: [], impacts: [], alive: [0, 0]};
+const state = {phase: 'deploy', elapsed: 0, clockTenths: -1, units: [], projectiles: [], waves: [], fields: [], impacts: [], alive: [0, 0]};
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(n, hi));
 const lerp = (a, b, t) => a + (b - a) * t;
 const distance2 = (a, b) => (a.x - b.x) ** 2 + (a.z - b.z) ** 2;
@@ -378,6 +381,7 @@ ui.start.addEventListener('click', () => {
   }));
   state.projectiles = [];
   state.waves = [];
+  state.fields = [];
   state.impacts = [];
   const allies = state.units.filter(unit => unit.team === 0).length;
   state.alive = [allies, state.units.length - allies];
@@ -392,11 +396,13 @@ ui.back.addEventListener('click', () => {
   state.units = [];
   state.projectiles = [];
   state.waves = [];
+  state.fields = [];
   state.impacts = [];
   updatePhase();
 });
 
 const tick = 1 / 60;
+const fieldPulseInterval = .5;
 const diamondChaseMargin = 3;
 const diamondLargeMaxDefense = .50;
 const bomberChaseMargin = 3;
@@ -927,6 +933,10 @@ function advanceShell(projectile, living, damage) {
   arc.traveled += attack.projectileSpeed * tick;
   if (arc.traveled >= lengths.at(-1)) {
     state.impacts.push({...impact, team, radius: attack.blastRadius, remaining: impactDuration});
+    if (attack.field) {
+      state.fields.push({...impact, team, attack: attack.field, pulsesLeft: attack.field.pulses,
+        nextPulse: state.elapsed + fieldPulseInterval});
+    }
     for (const unit of living) {
       if (unit.team === team) continue;
       const d2 = distance2(unit, impact);
@@ -945,6 +955,29 @@ function advanceShell(projectile, living, damage) {
   projectile.y = heightAt(t);
   projectile.z = lerp(origin.z, impact.z, t);
   return true;
+}
+function advanceFields(living, damage) {
+  let hits;
+  const now = state.elapsed;
+  for (let i = state.fields.length - 1; i >= 0; i--) {
+    const field = state.fields[i];
+    if (field.nextPulse > now + 1e-8) continue;
+    field.nextPulse += fieldPulseInterval;
+    if (--field.pulsesLeft === 0) state.fields.splice(i, 1);
+    const radius2 = field.attack.radius ** 2;
+    for (const unit of living) {
+      if (unit.team === field.team || unit.fieldHitUntil > now + 1e-8 || distance2(unit, field) > radius2) continue;
+      hits ??= new Map();
+      const amount = damageAgainst(field.attack, unit);
+      if (amount > (hits.get(unit) ?? 0)) hits.set(unit, amount);
+    }
+  }
+  if (hits) {
+    for (const [unit, amount] of hits) {
+      damage[unit.id] += amount;
+      unit.fieldHitUntil = now + fieldPulseInterval;
+    }
+  }
 }
 function launchDart(unit, heading, attack, range, lock = null) {
   const projectile = {x: unit.x, z: unit.z, team: unit.team, heading,
@@ -1112,6 +1145,7 @@ function simulate() {
   const damage = new Float32Array(state.units.length);
   advanceProjectiles(living, damage);
   advanceWaves(living, damage);
+  advanceFields(living, damage);
   let contactBursts;
   // Resolve contact before this tick's new attacks, but after already traveling shots.
   for (const unit of living) {
@@ -1187,7 +1221,10 @@ function simulate() {
   const [allies, enemies] = state.alive;
   if ((allies && enemies) || state.projectiles.length) return;
   if (state.waves.some(wave => living.some(unit => unit.hp > 0 && unit.team !== wave.team && !wave.hit.has(unit.id)))) return;
+  if (state.fields.some(field => living.some(unit => unit.hp > 0 && unit.team !== field.team
+      && distance2(unit, field) <= field.attack.radius ** 2))) return;
   state.waves = [];
+  state.fields = [];
   state.phase = 'result';
   ui.verdict.textContent = allies ? '아군 승리' : enemies ? '적군 승리' : '무승부';
   ui.summary.textContent = ui.clock.textContent + '초';
@@ -1677,6 +1714,7 @@ function createRenderer(scene) {
       draw(body,x,.025,z,halfWidth,height,halfLength,[...tone,.26],1,heading);
       draw(body,x,height+.025,z,halfWidth * .91,.052,halfLength * .91,[...tone,.80],1,heading);
       draw(capShape,x,height+.081,z,halfWidth * .69,0,halfLength * .69,[.11,.21,.20,.81],0,heading);
+      if (spec.field) draw(capShape,x,height+.085,z,halfWidth * .30,0,halfLength * .30,[...tone,.85],0,heading);
       return;
     }
     draw(capShape,x+.10,.021,z+.13,halfWidth * 1.16,0,halfLength * 1.09,[.04,.08,.09,.68 * life],0,heading);
@@ -1684,6 +1722,7 @@ function createRenderer(scene) {
     draw(body,x,height+.024,z,halfWidth * .94,.079*life,halfLength * .94,[...color.rim,life],1,heading);
     const cap = model.hurt > .08 ? [1,.94,.83] : color.cap;
     draw(capShape,x,height+.105*life,z,halfWidth * .72,0,halfLength * .72,[...cap,life],0,heading);
+    if (spec.field) draw(capShape,x,height+.108*life,z,halfWidth * .30,0,halfLength * .30,[...color.rim,life],0,heading);
   }
   return {
     render(units, preview, valid, projectiles) {
@@ -1889,10 +1928,50 @@ function drawPulseWave(ctx, wave) {
   }
   ctx.globalAlpha = 1;
 }
+const fieldTileOffsets = [[0, 0], [1, 0], [.5, .866], [-.5, .866], [-1, 0], [-.5, -.866], [.5, -.866]];
+const fieldTileCorners = [[.866, .5], [0, 1], [-.866, .5], [-.866, -.5], [0, -1], [.866, -.5]];
+function drawDamageField(ctx, field) {
+  const {x, z, attack} = field;
+  const point = project(x, .04, z);
+  const radius = attack.radius * camera.scale, depth = radius * camera.sin;
+  if (point.x < -radius || point.x > camera.w + radius || point.y < -depth || point.y > camera.h + depth) return;
+  const untilPulse = field.nextPulse - state.elapsed;
+  const remaining = untilPulse + (field.pulsesLeft - 1) * fieldPulseInterval;
+  const fade = clamp(remaining * 3, 0, 1);
+  const pulse = field.pulsesLeft === attack.pulses ? 0 : clamp((untilPulse - .30) / .20, 0, 1);
+  const color = field.team === 0 ? '#7df7ca' : '#ff9a70';
+  ctx.fillStyle = ctx.strokeStyle = color;
+  ctx.beginPath();
+  ctx.ellipse(point.x, point.y, radius, depth, 0, 0, Math.PI * 2);
+  ctx.globalAlpha = fade * (.13 + .14 * pulse);
+  ctx.fill();
+  ctx.globalAlpha = fade * (.50 + .32 * pulse);
+  ctx.lineWidth = 1.3;
+  ctx.stroke();
+  if (radius >= 8) {
+    ctx.beginPath();
+    for (const [ox, oz] of fieldTileOffsets) {
+      const centerX = x + ox * attack.radius * .45;
+      const centerZ = z + oz * attack.radius * .45;
+      for (let i = 0; i < fieldTileCorners.length; i++) {
+        const [cx, cz] = fieldTileCorners[i];
+        const vertex = project(centerX + cx * attack.radius * .235, .04, centerZ + cz * attack.radius * .235);
+        if (i === 0) ctx.moveTo(vertex.x, vertex.y);
+        else ctx.lineTo(vertex.x, vertex.y);
+      }
+      ctx.closePath();
+    }
+    ctx.globalAlpha = fade * (.36 + .45 * pulse);
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
 function drawMarks(ctx, units, preview, valid, projectiles) {
   ctx.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
   ctx.clearRect(0, 0, camera.w, camera.h);
   ctx.textAlign = 'center';
+  for (const field of state.fields) drawDamageField(ctx, field);
   for (const wave of state.waves) drawPulseWave(ctx, wave);
   for (const impact of state.impacts) {
     drawShellImpact(ctx, impact);
@@ -1937,7 +2016,14 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
         else if (model.type === 'square') polygonMark(ctx, model, .4, radius * Math.SQRT2, 4);
         else if ((spec.shape ?? model.type) === 'diamond' || spec.burst) polygonMark(ctx, model, .4, radius * spec.length, 4, spec.width / spec.length);
         else if (model.type === 'trapezoid') polygonMark(ctx, model, .4, radius, 4, trapezoid.width);
-        else if (model.type === 'hexagon') polygonMark(ctx, model, .4, radius * hexagon.radius / circle.radius, 6);
+        else if ((spec.shape ?? model.type) === 'hexagon') {
+          const markRadius = radius * spec.radius / circle.radius;
+          polygonMark(ctx, model, .4, markRadius, 6);
+          if (spec.field) {
+            ctx.fillStyle = '#152b2a';
+            polygonMark(ctx, model, .4, markRadius * .44, 6);
+          }
+        }
         else if (model.type === 'pentagon') polygonMark(ctx, model, .4, radius * pentagon.radius / circle.radius, 5);
         else if (model.type === 'octagon') polygonMark(ctx, model, .4, radius * octagon.radius / circle.radius, 8);
         else if (unitTypes[model.type].box) {
