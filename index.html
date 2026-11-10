@@ -212,14 +212,14 @@ const diamond = Object.freeze({ hp: 135, damage: 125, defense: 0, penetration: 0
 const trapezoid = Object.freeze({ hp: 180, damage: 52, defense: .15, penetration: .05,
   radius: circle.radius, width: 1.25, length: 1, moveSpeed: 2.5, attackGap: .90,
   attackRange: 3.25, approachRange: 1.5, attackHalfAngle: Math.PI / 3, maxTargets: 3 });
-const hexagon = Object.freeze({ hp: 280, damage: 165, defense: .05, penetration: .15,
+const hexagon = Object.freeze({ large: true, hp: 280, damage: 165, defense: .05, penetration: .15,
   radius: 2.15 / 2, moveSpeed: 1.85, attackGap: 3.8, attackRange: 32.5, minAttackRange: 6,
   retreatRange: 6.5, projectileSpeed: 8.2,
   scatterRadius: 4.5, blastRadius: 2.65, coreRadius: 1.5, edgeDamage: 75, edgePenetration: .05 });
-const pentagon = Object.freeze({ hp: 450, damage: 380, defense: .55, penetration: .65,
+const pentagon = Object.freeze({ large: true, hp: 450, damage: 380, defense: .55, penetration: .65,
   radius: 1.85 / 2, moveSpeed: 1.45, attackGap: 3.5, attackRange: 18, approachRange: 4,
   hitscan: true, splashRadius: .8, splashDamage: 55 });
-const octagon = Object.freeze({ hp: 1000, damage: 25, defense: .80, penetration: 1,
+const octagon = Object.freeze({ large: true, hp: 1000, damage: 25, defense: .80, penetration: 1,
   radius: 2.75 / 2, moveSpeed: .75, attackGap: 5, attackRange: 32, approachRange: 0,
   waveSpeed: 3.85, edgeDamage: 5, holdsGround: true });
 const wall = Object.freeze({ hp: 500, damage: 10, defense: .55, penetration: .05,
@@ -384,6 +384,7 @@ ui.back.addEventListener('click', () => {
 
 const tick = 1 / 60;
 const diamondChaseMargin = 3;
+const diamondLargeMaxDefense = .50;
 const maxUnitRadius = Math.max(...Object.values(unitTypes).map(spec => spec.radius));
 const collisionCellSize = 2 * maxUnitRadius;
 const collisionCols = Math.ceil(2 * arena.x / collisionCellSize);
@@ -469,15 +470,17 @@ function closestEnemy(unit, living, attack = null) {
   }
   return {target: best, range2};
 }
-function enemyByMaxHpWithin(unit, living, limit2, attack = null, preferHighHp = false) {
+function diamondTargetPriority(spec) {
+  return spec.large && spec.defense <= diamondLargeMaxDefense ? 1 - spec.defense : -spec.hp;
+}
+function enemyByPriorityWithin(unit, living, limit2, priority, attack = null) {
   let best = null, range2 = Infinity, bestScore = -Infinity;
-  const direction = preferHighHp ? 1 : -1;
   if (attack) limit2 = Math.min(limit2, attackReach(attack, maxUnitRadius) ** 2);
   for (const target of living) {
     if (target.team === unit.team) continue;
     const d2 = distance2(unit, target);
     if (d2 > limit2 || (attack && !attackInRange(unit, target, attack, d2))) continue;
-    const score = unitTypes[target.type].hp * direction;
+    const score = priority(unitTypes[target.type]);
     if (score > bestScore || (score === bestScore && d2 < range2 - 1e-8)) {
       best = target;
       range2 = d2;
@@ -525,7 +528,7 @@ function moveUnits(living) {
     const nearest = closestEnemy(unit, living);
     if (!nearest.target) continue;
     const {target, range2} = unit.type === 'diamond'
-      ? enemyByMaxHpWithin(unit, living, (Math.sqrt(nearest.range2) + diamondChaseMargin) ** 2)
+      ? enemyByPriorityWithin(unit, living, (Math.sqrt(nearest.range2) + diamondChaseMargin) ** 2, diamondTargetPriority)
       : nearest;
     if (spec.box && !spec.projectileSpeed) {
       const attackTarget = range2 <= attackReach(spec, maxUnitRadius) ** 2 && !attackInRange(unit, target, spec, range2)
@@ -949,7 +952,8 @@ function simulate() {
     const spec = unitTypes[unit.type];
     let aim;
     if (spec.blastRadius) aim = densestEnemyWithin(unit, living, spec, densityCounts ??= new Map());
-    else if (spec.hitscan || unit.type === 'diamond') aim = enemyByMaxHpWithin(unit, living, Infinity, spec, spec.hitscan);
+    else if (spec.hitscan) aim = enemyByPriorityWithin(unit, living, Infinity, target => target.hp, spec);
+    else if (unit.type === 'diamond') aim = enemyByPriorityWithin(unit, living, Infinity, diamondTargetPriority, spec);
     else aim = closestEnemy(unit, living, spec);
     const {target, range2} = aim;
     if (!target) continue;
