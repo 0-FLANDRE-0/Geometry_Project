@@ -89,10 +89,10 @@ button:disabled { opacity: .37; cursor: default; }
 .result-card h1 { font-size: clamp(24px, 5vw, 43px); letter-spacing: -.055em; margin: 3px 0 4px; }
 .result-card p { margin: 0; color: var(--muted); font-size: 12px; }
 .error-card { color: var(--coral); pointer-events: auto; }
-@media (orientation: landscape) and (max-width: 1320px) {
-  .controls { max-width: 302px; }
-  .bar { display: grid; width: 302px; }
-  .unit-picker { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) 46px minmax(0, 1fr); }
+@media (orientation: landscape) and (max-width: 1370px) {
+  .controls { max-width: 330px; }
+  .bar { display: grid; width: 330px; }
+  .unit-picker { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) 46px repeat(2, minmax(0, 1fr)); }
   .unit-picker .btn { padding-inline: 0; font-size: 10.5px; }
   .unit-picker [aria-hidden="true"] { display: none; }
   .field { display: flex; align-items: center; justify-content: space-between; }
@@ -150,6 +150,7 @@ button:disabled { opacity: .37; cursor: default; }
         <button class="btn" id="unit-hexagon" type="button" aria-pressed="false"><span aria-hidden="true">⬢</span> 육각형</button>
         <button class="btn" id="unit-fieldHexagon" type="button" aria-label="장판형 육각형" title="장판형 육각형" aria-pressed="false"><span aria-hidden="true">⬡</span> 장판</button>
         <button class="btn" id="unit-pentagon" type="button" aria-pressed="false"><span aria-hidden="true">⬟</span> 오각형</button>
+        <button class="btn" id="unit-beamPentagon" type="button" aria-label="직사 레이저형 오각형" title="직사 레이저형 오각형" aria-pressed="false"><svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M6 0 12 4.4 9.7 11.5H2.3L0 4.4zM5 4v5h2V4z" fill-rule="evenodd"/></svg> 직사</button>
         <button class="btn" id="unit-octagon" type="button" aria-pressed="false"><svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M4 0h4l4 4v4l-4 4H4L0 8V4z"/></svg> 팔각형</button>
         <button class="btn" id="unit-wall" type="button" aria-label="방벽 직사각형" title="방벽 직사각형" aria-pressed="false"><span aria-hidden="true">▬</span> 방벽</button>
       </div>
@@ -189,7 +190,7 @@ button:disabled { opacity: .37; cursor: default; }
 const byId = id => document.getElementById(id);
 const ui = Object.fromEntries([
   'arena', 'marks', 'hint', 'unit-circle', 'unit-triangle', 'unit-square', 'unit-diamond', 'unit-trapezoid', 'unit-hexagon',
-  'unit-pentagon', 'unit-octagon', 'unit-wall', 'unit-piercing', 'unit-spread', 'unit-escort', 'unit-bomber', 'unit-fieldHexagon',
+  'unit-pentagon', 'unit-beamPentagon', 'unit-octagon', 'unit-wall', 'unit-piercing', 'unit-spread', 'unit-escort', 'unit-bomber', 'unit-fieldHexagon',
   'count', 'count-down', 'count-up', 'rows', 'rows-down', 'rows-up', 'undo', 'place',
   'start', 'deploy-bar', 'battle-bar', 'back', 'clock', 'result', 'verdict', 'summary', 'error',
   'zoom-out', 'zoom-in', 'view-reset', 'fullscreen', 'screen-notice'
@@ -230,16 +231,18 @@ const hexagon = Object.freeze({ large: true, hp: 280, damage: 165, defense: .05,
   escortable: true });
 const fieldHexagon = Object.freeze({ ...hexagon, shape: 'hexagon', damage: 75, edgeDamage: 45, attackGap: 5.2,
   field: Object.freeze({radius: 3.85, damage: 7.5, penetration: hexagon.edgePenetration, pulses: 10}) });
-const pentagon = Object.freeze({ large: true, hp: 450, damage: 380, defense: .55, penetration: .65,
-  radius: 1.85 / 2, moveSpeed: 1.45, attackGap: 3.5, attackRange: 18, approachRange: 4,
-  hitscan: true, splashRadius: .8, splashDamage: 55 });
+const pentagonChassis = { large: true, hp: 450, defense: .55, penetration: .65,
+  radius: 1.85 / 2, moveSpeed: 1.45, attackRange: 18, approachRange: 4, hitscan: true };
+const pentagon = Object.freeze({ ...pentagonChassis, damage: 380, attackGap: 3.5, splashRadius: .8, splashDamage: 55 });
+const beamPentagon = Object.freeze({ ...pentagonChassis, shape: 'pentagon', damage: 220, attackGap: 6.5,
+  beam: Object.freeze({ width: 2.2, chargeTime: .6, edgeScale: .5 }) });
 const octagon = Object.freeze({ large: true, hp: 1000, damage: 25, defense: .80, penetration: 1,
   radius: 2.75 / 2, moveSpeed: .75, attackGap: 5, attackRange: 32, approachRange: 0,
   waveSpeed: 3.85, edgeDamage: 5, holdsGround: true });
 const wall = Object.freeze({ hp: 500, damage: 10, defense: .55, penetration: .05,
   width: 1.65, length: 1, radius: Math.hypot(.825, .5), moveSpeed: 3.06, attackGap: 1,
   attackRange: circle.attackRange, box: true, shape: 'square', rootOnMeleeHit: .5, enemyPushWeight: .25 });
-const unitTypes = Object.freeze({circle, triangle, piercing, spread, square, diamond, escort, bomber, trapezoid, hexagon, fieldHexagon, pentagon, octagon, wall});
+const unitTypes = Object.freeze({circle, triangle, piercing, spread, square, diamond, escort, bomber, trapezoid, hexagon, fieldHexagon, pentagon, beamPentagon, octagon, wall});
 const customCorners = {
   trapezoid: [[-.68, 1], [.68, 1], [1, -1], [-1, -1]],
   bomber: [[0, 1], [1, -.35], [0, -1], [-1, -.35]]
@@ -671,6 +674,7 @@ function moveUnits(living) {
   let bomberDensity;
   for (const unit of living) {
     unit.vx = unit.vz = 0;
+    if (unit.beamFireAt !== undefined) continue;
     const spec = unitTypes[unit.type];
     const rooted = unit.rootedUntil > state.elapsed + 1e-8;
     if (rooted && !spec.box) continue;
@@ -1036,6 +1040,24 @@ function fireHitscan(unit, aim, spec, living, damage) {
   state.impacts.push({...impact, team: unit.team, radius, remaining: impactDuration,
     trace: {x: ray.x + ray.dx * muzzle, z: ray.z + ray.dz * muzzle}});
 }
+function beamLane(unit, spec) {
+  const heading = facingOf(unit);
+  return {x: unit.x, z: unit.z, team: unit.team, dx: Math.sin(heading), dz: Math.cos(heading),
+    range: spec.attackRange, halfWidth: spec.beam.width / 2};
+}
+function fireBeam(unit, spec, living, damage) {
+  const lane = beamLane(unit, spec);
+  for (const target of living) {
+    if (target.team === unit.team) continue;
+    const x = target.x - lane.x, z = target.z - lane.z;
+    const along = x * lane.dx + z * lane.dz;
+    const side = Math.abs(x * lane.dz - z * lane.dx);
+    if (along < -1e-8 || along > lane.range + 1e-8 || side > lane.halfWidth + 1e-8) continue;
+    const scale = lerp(1, spec.beam.edgeScale, Math.min(1, side / lane.halfWidth));
+    damage[target.id] += damageAgainst(spec, target) * scale;
+  }
+  state.impacts.push({...lane, beam: true, remaining: impactDuration});
+}
 function applyMeleeHit(attacker, target, spec, damage) {
   damage[target.id] += damageAgainst(spec, target);
   const duration = unitTypes[target.type].rootOnMeleeHit;
@@ -1168,6 +1190,13 @@ function simulate() {
     const spec = unitTypes[unit.type];
     if (spec.burst) continue;
     unit.cooldown = Math.max(0, unit.cooldown - tick);
+    if (unit.beamFireAt !== undefined) {
+      if (state.elapsed + 1e-8 >= unit.beamFireAt) {
+        delete unit.beamFireAt;
+        fireBeam(unit, spec, living, damage);
+      }
+      continue;
+    }
     if (unit.cooldown > 1e-8) continue;
     let aim;
     if (spec.blastRadius) {
@@ -1185,6 +1214,9 @@ function simulate() {
     unit.cooldown = spec.attackGap;
     if (spec.blastRadius) {
       launchShell(unit, target, spec);
+    } else if (spec.beam) {
+      unit.heading = Math.atan2(target.x - unit.x, target.z - unit.z);
+      unit.beamFireAt = state.elapsed + spec.beam.chargeTime;
     } else if (spec.hitscan) {
       fireHitscan(unit, target, spec, living, damage);
     } else if (spec.waveSpeed) {
@@ -1715,6 +1747,7 @@ function createRenderer(scene) {
       draw(body,x,height+.025,z,halfWidth * .91,.052,halfLength * .91,[...tone,.80],1,heading);
       draw(capShape,x,height+.081,z,halfWidth * .69,0,halfLength * .69,[.11,.21,.20,.81],0,heading);
       if (spec.field) draw(capShape,x,height+.085,z,halfWidth * .30,0,halfLength * .30,[...tone,.85],0,heading);
+      if (spec.beam) draw(capShape,x,height+.085,z,halfWidth * .25,0,halfLength * .57,[...tone,.85],0,heading);
       return;
     }
     draw(capShape,x+.10,.021,z+.13,halfWidth * 1.16,0,halfLength * 1.09,[.04,.08,.09,.68 * life],0,heading);
@@ -1723,6 +1756,7 @@ function createRenderer(scene) {
     const cap = model.hurt > .08 ? [1,.94,.83] : color.cap;
     draw(capShape,x,height+.105*life,z,halfWidth * .72,0,halfLength * .72,[...cap,life],0,heading);
     if (spec.field) draw(capShape,x,height+.108*life,z,halfWidth * .30,0,halfLength * .30,[...color.rim,life],0,heading);
+    if (spec.beam) draw(capShape,x,height+.108*life,z,halfWidth * .25,0,halfLength * .57,[...color.rim,life],0,heading);
   }
   return {
     render(units, preview, valid, projectiles) {
@@ -1901,6 +1935,42 @@ function drawHitscanEffect(ctx, impact) {
   ctx.stroke();
   ctx.globalAlpha = 1;
 }
+function drawBeam(ctx, lane, energy, charging = false) {
+  const {x, z, dx, dz, range, halfWidth, team} = lane;
+  const y = charging ? .04 : .38;
+  const from = project(x, y, z);
+  const endX = x + dx * range, endZ = z + dz * range;
+  const to = project(endX, y, endZ);
+  const accent = team === 0 ? '#67f6d4' : '#ff9a72';
+  function band(width) {
+    const sx = dz * width, sz = -dx * width;
+    fillPolygon(ctx, [
+      project(x + sx, y, z + sz), project(endX + sx, y, endZ + sz),
+      project(endX - sx, y, endZ - sz), project(x - sx, y, z - sz)
+    ]);
+  }
+  ctx.fillStyle = accent;
+  ctx.globalAlpha = charging ? .07 + energy * .13 : energy * .52;
+  band(halfWidth);
+  if (charging) {
+    ctx.strokeStyle = accent;
+    ctx.globalAlpha = .30 + energy * .52;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  } else {
+    ctx.globalAlpha = energy * .88;
+    band(halfWidth * .62);
+    ctx.fillStyle = '#fff5d5';
+    ctx.globalAlpha = energy;
+    band(halfWidth * .26);
+    const span = Math.hypot(to.x - from.x, to.y - from.y);
+    if (span > .001) {
+      const flash = clamp(camera.scale * halfWidth, 4, 20);
+      drawShotFlash(ctx, from, (to.x - from.x) / span, (to.y - from.y) / span, flash * 1.5, flash);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
 function drawPulseWave(ctx, wave) {
   if (!wave.radius) return;
   const point = project(wave.x, .05, wave.z);
@@ -1974,11 +2044,19 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
   for (const field of state.fields) drawDamageField(ctx, field);
   for (const wave of state.waves) drawPulseWave(ctx, wave);
   for (const impact of state.impacts) {
-    drawShellImpact(ctx, impact);
-    if (impact.trace) drawHitscanEffect(ctx, impact);
+    if (impact.beam) {
+      drawBeam(ctx, impact, (impact.remaining / impactDuration) ** 2);
+    } else {
+      drawShellImpact(ctx, impact);
+      if (impact.trace) drawHitscanEffect(ctx, impact);
+    }
   }
   for (const unit of units) {
     const spec = unitTypes[unit.type];
+    if (state.phase === 'battle' && unit.hp > 0 && unit.beamFireAt !== undefined) {
+      const charge = clamp(1 - (unit.beamFireAt - state.elapsed) / spec.beam.chargeTime, 0, 1);
+      drawBeam(ctx, beamLane(unit, spec), charge, true);
+    }
     if (unit.hp > 0 && unit.rootedUntil > state.elapsed) {
       const point = project(unit.x, .04, unit.z);
       const radius = Math.max(3, spec.radius * camera.scale);
@@ -2024,7 +2102,14 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
             polygonMark(ctx, model, .4, markRadius * .44, 6);
           }
         }
-        else if (model.type === 'pentagon') polygonMark(ctx, model, .4, radius * pentagon.radius / circle.radius, 5);
+        else if ((spec.shape ?? model.type) === 'pentagon') {
+          const markRadius = radius * spec.radius / circle.radius;
+          polygonMark(ctx, model, .4, markRadius, 5);
+          if (spec.beam) {
+            ctx.fillStyle = '#152b2a';
+            polygonMark(ctx, model, .4, markRadius * .54, 5, .48);
+          }
+        }
         else if (model.type === 'octagon') polygonMark(ctx, model, .4, radius * octagon.radius / circle.radius, 8);
         else if (unitTypes[model.type].box) {
           const {width, length} = unitTypes[model.type];
