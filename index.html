@@ -89,7 +89,7 @@ button:disabled { opacity: .37; cursor: default; }
 .result-card h1 { font-size: clamp(24px, 5vw, 43px); letter-spacing: -.055em; margin: 3px 0 4px; }
 .result-card p { margin: 0; color: var(--muted); font-size: 12px; }
 .error-card { color: var(--coral); pointer-events: auto; }
-@media (orientation: landscape) and (max-width: 1160px) {
+@media (orientation: landscape) and (max-width: 1210px) {
   .controls { max-width: 252px; }
   .bar { display: grid; width: 252px; }
   .unit-picker { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) 46px; }
@@ -145,6 +145,7 @@ button:disabled { opacity: .37; cursor: default; }
         <button class="btn" id="unit-square" type="button" aria-pressed="false"><span aria-hidden="true">■</span> 사각형</button>
         <button class="btn" id="unit-trapezoid" type="button" aria-pressed="false"><svg width="11" height="9" viewBox="0 0 12 10" aria-hidden="true"><path fill="currentColor" d="M2 0h8l2 10H0z"/></svg> 사다리꼴</button>
         <button class="btn" id="unit-diamond" type="button" aria-pressed="false"><span aria-hidden="true">◆</span> 마름모</button>
+        <button class="btn" id="unit-escort" type="button" aria-label="호위 마름모" title="호위 마름모" aria-pressed="false"><svg width="15" height="9" viewBox="0 0 15 9" aria-hidden="true"><path fill="currentColor" d="M7.5 0 15 4.5 7.5 9 0 4.5z"/></svg> 호위</button>
         <button class="btn" id="unit-hexagon" type="button" aria-pressed="false"><span aria-hidden="true">⬢</span> 육각형</button>
         <button class="btn" id="unit-pentagon" type="button" aria-pressed="false"><span aria-hidden="true">⬟</span> 오각형</button>
         <button class="btn" id="unit-octagon" type="button" aria-pressed="false"><svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M4 0h4l4 4v4l-4 4H4L0 8V4z"/></svg> 팔각형</button>
@@ -186,7 +187,7 @@ button:disabled { opacity: .37; cursor: default; }
 const byId = id => document.getElementById(id);
 const ui = Object.fromEntries([
   'arena', 'marks', 'hint', 'unit-circle', 'unit-triangle', 'unit-square', 'unit-diamond', 'unit-trapezoid', 'unit-hexagon',
-  'unit-pentagon', 'unit-octagon', 'unit-wall', 'unit-piercing', 'unit-spread',
+  'unit-pentagon', 'unit-octagon', 'unit-wall', 'unit-piercing', 'unit-spread', 'unit-escort',
   'count', 'count-down', 'count-up', 'rows', 'rows-down', 'rows-up', 'undo', 'place',
   'start', 'deploy-bar', 'battle-bar', 'back', 'clock', 'result', 'verdict', 'summary', 'error',
   'zoom-out', 'zoom-in', 'view-reset', 'fullscreen', 'screen-notice'
@@ -195,28 +196,32 @@ const circle = Object.freeze({ hp: 200, damage: 75, defense: .10, penetration: 0
   radius: .5, moveSpeed: 3.06, attackGap: .82, attackRange: 1.0625 });
 const triangle = Object.freeze({ hp: 120, damage: 100, defense: 0, penetration: .20,
   radius: circle.radius, moveSpeed: circle.moveSpeed, attackGap: 1.2, attackRange: 10,
-  approachRange: 9, projectileSpeed: circle.moveSpeed * 2 });
+  approachRange: 9, projectileSpeed: circle.moveSpeed * 2, escortable: true });
 const piercing = Object.freeze({ hp: 75, damage: 95, defense: .02, penetration: .28,
   width: 1, length: 1.45, radius: Math.hypot(.5, .725), box: true, shape: 'triangle',
   moveSpeed: 2.90, attackGap: 1.35, attackRange: 11.5, approachRange: 10.5, projectileSpeed: 7.85,
-  projectileHits: 2, pierceDamageRetention: .8 });
+  projectileHits: 2, pierceDamageRetention: .8, escortable: true });
 const spread = Object.freeze({ hp: 120, damage: 55, defense: 0, penetration: .25,
   width: 1.45, length: 1, radius: Math.hypot(.725, .5), box: true, shape: 'triangle',
   moveSpeed: 3, attackGap: 1, attackRange: 8.5, approachRange: 7.5, projectileSpeed: 5.15, homingTurnRate: Math.PI * 4 / 3,
   sideAngles: Object.freeze([-Math.PI / 10, Math.PI / 10]),
-  sideAttack: Object.freeze({damage: 45, penetration: .15, projectileSpeed: 5.15}) });
+  sideAttack: Object.freeze({damage: 45, penetration: .15, projectileSpeed: 5.15}), escortable: true });
 const square = Object.freeze({ hp: 265, damage: 40, defense: .40, penetration: 0,
   radius: circle.radius, moveSpeed: 2.98, attackGap: 1, attackRange: circle.attackRange });
 const diamond = Object.freeze({ hp: 135, damage: 125, defense: 0, penetration: 0,
   radius: circle.radius, width: .95, length: 1.15, moveSpeed: 7.68, attackGap: 1.1,
   attackRange: circle.attackRange });
+const escort = Object.freeze({ hp: 150, damage: 85, defense: .08, penetration: .02,
+  width: 1.45, length: 1.05, radius: Math.hypot(.725, .525), box: true, shape: 'diamond',
+  moveSpeed: 6.85, attackGap: 1.25, attackRange: circle.attackRange, escort: true });
 const trapezoid = Object.freeze({ hp: 180, damage: 52, defense: .15, penetration: .05,
   radius: circle.radius, width: 1.25, length: 1, moveSpeed: 2.5, attackGap: .90,
   attackRange: 3.25, approachRange: 1.5, attackHalfAngle: Math.PI / 3, maxTargets: 3 });
 const hexagon = Object.freeze({ large: true, hp: 280, damage: 165, defense: .05, penetration: .15,
   radius: 2.15 / 2, moveSpeed: 1.85, attackGap: 3.8, attackRange: 32.5, minAttackRange: 6,
   retreatRange: 6.5, projectileSpeed: 8.2,
-  scatterRadius: 4.5, blastRadius: 2.65, coreRadius: 1.5, edgeDamage: 75, edgePenetration: .05 });
+  scatterRadius: 4.5, blastRadius: 2.65, coreRadius: 1.5, edgeDamage: 75, edgePenetration: .05,
+  escortable: true });
 const pentagon = Object.freeze({ large: true, hp: 450, damage: 380, defense: .55, penetration: .65,
   radius: 1.85 / 2, moveSpeed: 1.45, attackGap: 3.5, attackRange: 18, approachRange: 4,
   hitscan: true, splashRadius: .8, splashDamage: 55 });
@@ -226,7 +231,7 @@ const octagon = Object.freeze({ large: true, hp: 1000, damage: 25, defense: .80,
 const wall = Object.freeze({ hp: 500, damage: 10, defense: .55, penetration: .05,
   width: 1.65, length: 1, radius: Math.hypot(.825, .5), moveSpeed: 3.06, attackGap: 1,
   attackRange: circle.attackRange, box: true, shape: 'square', rootOnMeleeHit: .5, enemyPushWeight: .25 });
-const unitTypes = Object.freeze({circle, triangle, piercing, spread, square, diamond, trapezoid, hexagon, pentagon, octagon, wall});
+const unitTypes = Object.freeze({circle, triangle, piercing, spread, square, diamond, escort, trapezoid, hexagon, pentagon, octagon, wall});
 const trapezoidCorners = [[-.68, 1], [.68, 1], [1, -1], [-1, -1]];
 const projectileRadius = .16;
 const shellRadius = .24;
@@ -386,6 +391,9 @@ ui.back.addEventListener('click', () => {
 const tick = 1 / 60;
 const diamondChaseMargin = 3;
 const diamondLargeMaxDefense = .50;
+const escortAlertRange = 4.5;
+const escortLeashRange = 6;
+const escortOffset = 2;
 const maxUnitRadius = Math.max(...Object.values(unitTypes).map(spec => spec.radius));
 const collisionCellSize = 2 * maxUnitRadius;
 const collisionCols = Math.ceil(2 * arena.x / collisionCellSize);
@@ -520,12 +528,79 @@ function turnTowards(heading, targetHeading, maxStep) {
   const turn = Math.atan2(Math.sin(offset), Math.cos(offset));
   return Math.abs(turn) <= maxStep ? targetHeading : heading + Math.sign(turn) * maxStep;
 }
+function steer(unit, spec, living, dx, dz, gap) {
+  let forward = Infinity, side = 0;
+  const maxSeparation = spec.radius + maxUnitRadius;
+  const search2 = (maxSeparation + .42) ** 2 + (maxSeparation * .88) ** 2 + 1e-8;
+  for (const other of living) {
+    if (other.team !== unit.team || unit === other) continue;
+    const rx = other.x - unit.x, rz = other.z - unit.z;
+    if (rx * rx + rz * rz > search2) continue;
+    const along = rx * dx + rz * dz;
+    const lateral = -rx * dz + rz * dx;
+    const separation = spec.radius + unitTypes[other.type].radius;
+    if (along > .035 && along < Math.min(forward, separation + .42) && Math.abs(lateral) < separation * .88) {
+      forward = along;
+      side = Math.abs(lateral) > .018 ? -Math.sign(lateral) : (unit.id % 2 ? 1 : -1);
+    }
+  }
+  if (side) [dx, dz] = [dx - dz * side * .82, dz + dx * side * .82];
+  const step = Math.min(spec.moveSpeed * tick, gap) / Math.hypot(dx, dz);
+  unit.vx = dx * step;
+  unit.vz = dz * step;
+}
+function moveEscort(unit, spec, living, escortable, rooted) {
+  if (!(unit.protectedAlly?.hp > 0)) {
+    let distance = Infinity;
+    unit.protectedAlly = null;
+    unit.escortThreat = null;
+    for (const ally of escortable) {
+      if (ally.team !== unit.team) continue;
+      const d2 = distance2(unit, ally);
+      if (d2 >= distance) continue;
+      distance = d2;
+      unit.protectedAlly = ally;
+    }
+    if (!unit.protectedAlly) return false;
+    const side = unit.team === 0 ? -1 : 1;
+    unit.escortSide = clamp((unit.x - unit.protectedAlly.x) * side, -1.25, 1.25);
+  }
+  const ally = unit.protectedAlly;
+  const {target, range2} = closestEnemy(ally, living);
+  if (range2 <= escortAlertRange ** 2) {
+    unit.escortThreat = target;
+  } else if (!(unit.escortThreat?.hp > 0) || distance2(ally, unit.escortThreat) > escortLeashRange ** 2) {
+    unit.escortThreat = null;
+  }
+  if (!target) return true;
+  const threat = unit.escortThreat ?? target;
+  if (threat.x !== unit.x || threat.z !== unit.z) {
+    unit.heading = turnTowards(facingOf(unit), Math.atan2(threat.x - unit.x, threat.z - unit.z), Math.PI * 3 * tick);
+  }
+  if (rooted) return true;
+  let x = threat.x, z = threat.z, tolerance = 1e-8;
+  if (unit.escortThreat) {
+    if (attackInRange(unit, threat, spec, distance2(unit, threat))) return true;
+  } else {
+    const heading = range2 > 1e-8 ? Math.atan2(target.x - ally.x, target.z - ally.z) : teamHeading(unit);
+    const dx = Math.sin(heading), dz = Math.cos(heading);
+    x = clamp(ally.x + dx * escortOffset + dz * unit.escortSide, -arena.x + spec.radius, arena.x - spec.radius);
+    z = clamp(ally.z + dz * escortOffset - dx * unit.escortSide, -arena.z + spec.radius, arena.z - spec.radius);
+    tolerance = .15;
+  }
+  const dx = x - unit.x, dz = z - unit.z;
+  const distance = Math.hypot(dx, dz);
+  if (distance > tolerance) steer(unit, spec, living, dx / distance, dz / distance, distance - tolerance);
+  return true;
+}
 function moveUnits(living) {
+  let escortable;
   for (const unit of living) {
     unit.vx = unit.vz = 0;
     const spec = unitTypes[unit.type];
     const rooted = unit.rootedUntil > state.elapsed + 1e-8;
     if (rooted && !spec.box) continue;
+    if (spec.escort && moveEscort(unit, spec, living, escortable ??= living.filter(ally => unitTypes[ally.type].escortable), rooted)) continue;
     const nearest = closestEnemy(unit, living);
     if (!nearest.target) continue;
     const {target, range2} = unit.type === 'diamond'
@@ -579,27 +654,9 @@ function moveUnits(living) {
       dx /= directionLength;
       dz /= directionLength;
     }
-    let forward = Infinity, side = 0;
-    const maxSeparation = spec.radius + maxUnitRadius;
-    const search2 = (maxSeparation + .42) ** 2 + (maxSeparation * .88) ** 2 + 1e-8;
-    for (const other of living) {
-      if (other.team !== unit.team || unit === other) continue;
-      const rx = other.x - unit.x, rz = other.z - unit.z;
-      if (rx * rx + rz * rz > search2) continue;
-      const along = rx * dx + rz * dz;
-      const lateral = -rx * dz + rz * dx;
-      const separation = spec.radius + unitTypes[other.type].radius;
-      if (along > .035 && along < Math.min(forward, separation + .42) && Math.abs(lateral) < separation * .88) {
-        forward = along;
-        side = Math.abs(lateral) > .018 ? -Math.sign(lateral) : (unit.id % 2 ? 1 : -1);
-      }
-    }
-    if (side) [dx, dz] = [dx - dz * side * .82, dz + dx * side * .82];
     const stopRange = boxApproach ? 0 : (spec.approachRange !== undefined || spec.projectileSpeed ? approachRange : contact);
     const gap = retreating ? spec.retreatRange - range : range - stopRange;
-    const step = Math.min(spec.moveSpeed * tick, gap) / Math.hypot(dx, dz);
-    unit.vx = dx * step;
-    unit.vz = dz * step;
+    steer(unit, spec, living, dx, dz, gap);
     if (unit.type === 'diamond') unit.heading = Math.atan2(unit.vx, unit.vz);
   }
   const holdOrigins = new Map();
@@ -678,6 +735,10 @@ function separateUnits(living, holdOrigins) {
             if (opposing) {
               aWeight = aOrigin ? 0 : unitTypes[a.type].enemyPushWeight ?? 1;
               bWeight = bOrigin ? 0 : unitTypes[b.type].enemyPushWeight ?? 1;
+            } else if (a.protectedAlly === b) {
+              bWeight = 0;
+            } else if (b.protectedAlly === a) {
+              aWeight = 0;
             }
             const totalWeight = aWeight + bWeight;
             const aShare = depth * (aWeight / totalWeight);
@@ -957,6 +1018,9 @@ function simulate() {
     if (spec.blastRadius) aim = densestEnemyWithin(unit, living, spec, densityCounts ??= new Map());
     else if (spec.hitscan) aim = enemyByPriorityWithin(unit, living, Infinity, target => target.hp, spec);
     else if (unit.type === 'diamond') aim = enemyByPriorityWithin(unit, living, Infinity, diamondTargetPriority, spec);
+    else if (unit.escortThreat && attackInRange(unit, unit.escortThreat, spec, distance2(unit, unit.escortThreat))) {
+      aim = {target: unit.escortThreat, range2: distance2(unit, unit.escortThreat)};
+    }
     else aim = closestEnemy(unit, living, spec);
     const {target, range2} = aim;
     if (!target) continue;
@@ -979,7 +1043,7 @@ function simulate() {
       unit.aimX = (target.x - unit.x) / distance;
       unit.aimZ = (target.z - unit.z) / distance;
       unit.swing = .16;
-      if (spec.attackHalfAngle || unit.type === 'diamond') unit.heading = Math.atan2(unit.aimX, unit.aimZ);
+      if (spec.attackHalfAngle || unit.type === 'diamond' || spec.escort) unit.heading = Math.atan2(unit.aimX, unit.aimZ);
       if (spec.attackHalfAngle) sweepAttack(unit, spec, living, damage);
       else applyMeleeHit(unit, target, spec, damage);
     }
@@ -1735,7 +1799,7 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
         if (model.type === 'triangle') polygonMark(ctx, model, .4, radius + .35, 3);
         else if (spec.shape === 'triangle') polygonMark(ctx, model, .4, (radius + .35) * spec.length, 3, spec.width / spec.length);
         else if (model.type === 'square') polygonMark(ctx, model, .4, radius * Math.SQRT2, 4);
-        else if (model.type === 'diamond') polygonMark(ctx, model, .4, radius * diamond.length, 4, diamond.width / diamond.length);
+        else if ((spec.shape ?? model.type) === 'diamond') polygonMark(ctx, model, .4, radius * spec.length, 4, spec.width / spec.length);
         else if (model.type === 'trapezoid') polygonMark(ctx, model, .4, radius, 4, trapezoid.width);
         else if (model.type === 'hexagon') polygonMark(ctx, model, .4, radius * hexagon.radius / circle.radius, 6);
         else if (model.type === 'pentagon') polygonMark(ctx, model, .4, radius * pentagon.radius / circle.radius, 5);
