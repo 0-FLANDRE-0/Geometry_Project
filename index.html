@@ -336,6 +336,7 @@ const impactDuration = .48;
 const hitscanTraceDuration = .18;
 const defaultArena = {x: 35, z: 35, split: 0, pits: []};
 const maxPits = 32;
+const pitRegionCache = new WeakMap();
 const terrainRoutes = new Map();
 const arena = {...defaultArena};
 const deploy = {type: 'circle', count: 10, rows: 2, anchor: null, groups: [], units: [], ready: false, preview: null};
@@ -362,6 +363,74 @@ function terrainRadius(type) {
 function insidePit({x,z}, pit, margin = 0) {
   return x > pit.left - margin + 1e-8 && x < pit.right + margin - 1e-8
     && z > pit.front - margin + 1e-8 && z < pit.back + margin - 1e-8;
+}
+function pitsOverlap(a, b) {
+  return a.left < b.right && b.left < a.right && a.front < b.back && b.front < a.back;
+}
+function addPitRectangle(pits, pit) {
+  const contains = (outer, inner) => outer.left <= inner.left && outer.right >= inner.right
+    && outer.front <= inner.front && outer.back >= inner.back;
+  const remaining = [...pits];
+  let merged = pit;
+  for (let i = 0; i < remaining.length;) {
+    const other = remaining[i];
+    if (contains(other, merged)) return pits;
+    if (contains(merged, other)) {
+      remaining.splice(i, 1);
+      continue;
+    }
+    const sameWidth = merged.left === other.left && merged.right === other.right;
+    const sameDepth = merged.front === other.front && merged.back === other.back;
+    if ((sameWidth || sameDepth) && pitsOverlap(merged, other)) {
+      merged = {
+        left: Math.min(merged.left, other.left), right: Math.max(merged.right, other.right),
+        front: Math.min(merged.front, other.front), back: Math.max(merged.back, other.back)
+      };
+      remaining.splice(i, 1);
+      i = 0;
+    } else i++;
+  }
+  remaining.push(merged);
+  return remaining;
+}
+function pitRegionOutline(parts) {
+  const xs = [...new Set(parts.flatMap(pit => [pit.left, pit.right]))].sort((a,b) => a - b);
+  const zs = [...new Set(parts.flatMap(pit => [pit.front, pit.back]))].sort((a,b) => a - b);
+  // A cell is entirely inside or outside the union because the grid follows every rectangle edge.
+  const filled = zs.slice(0, -1).map((front, row) => xs.slice(0, -1).map((left, col) =>
+    parts.some(pit => left >= pit.left && xs[col + 1] <= pit.right && front >= pit.front && zs[row + 1] <= pit.back)));
+  const edges = [];
+  for (const [row, cells] of filled.entries()) {
+    for (const [col, inside] of cells.entries()) {
+      if (!inside) continue;
+      const left = xs[col], right = xs[col + 1], front = zs[row], back = zs[row + 1];
+      if (!cells[col - 1]) edges.push([left, front, left, back]);
+      if (!cells[col + 1]) edges.push([right, front, right, back]);
+      if (!filled[row - 1]?.[col]) edges.push([left, front, right, front]);
+      if (!filled[row + 1]?.[col]) edges.push([left, back, right, back]);
+    }
+  }
+  return edges;
+}
+function pitRegions(pits) {
+  const cached = pitRegionCache.get(pits);
+  if (cached) return cached;
+  const ungrouped = new Set(pits);
+  const regions = [];
+  for (const seed of ungrouped) {
+    ungrouped.delete(seed);
+    const parts = [seed];
+    for (const part of parts) {
+      for (const other of ungrouped) {
+        if (!pitsOverlap(part, other)) continue;
+        ungrouped.delete(other);
+        parts.push(other);
+      }
+    }
+    regions.push({parts, edges: pitRegionOutline(parts)});
+  }
+  pitRegionCache.set(pits, regions);
+  return regions;
 }
 function unitOverPit(unit, pits) {
   return pits.some(pit => insidePit(unit, pit, terrainRadius(unit.type)));
@@ -589,7 +658,8 @@ function readStageDocument(documentData) {
     throw new Error('적 구역은 맵 세로 길이의 15~85%로 설정해줘.');
   }
   const pits = map.pits === undefined ? [] : map.pits;
-  if (!Array.isArray(pits) || pits.length > maxPits) throw new Error('바닥 구멍은 최대 ' + maxPits + '개까지 넣을 수 있어.');
+  if (!Array.isArray(pits)) throw new Error('바닥 구멍 목록을 확인해줘.');
+  if (pits.length > maxPits) throw new Error('구멍을 구성하는 사각형은 최대 ' + maxPits + '개까지 넣을 수 있어.');
   const layout = stageArena({...map, pits: []});
   for (const [index, pit] of pits.entries()) {
     const error = pitBoundsError(pit, layout);
@@ -662,7 +732,7 @@ function updateStageTools() {
   caption.hidden = mode === 'sandbox';
   const text = notice?.text ?? (draft.name + ' · ' + draft.width + ' × ' + draft.depth
     + ' · 적 ' + draft.groups.reduce((sum, group) => sum + group.units.length, 0) + '기'
-    + (draft.pits.length ? ' · 구멍 ' + draft.pits.length + '개' : ''));
+    + (draft.pits.length ? ' · 구멍 ' + pitRegions(draft.pits).length + '개' : ''));
   if (caption.textContent !== text) caption.textContent = text;
   caption.dataset.error = Boolean(notice?.error);
 }
@@ -688,8 +758,9 @@ function toggleTerrainMode() {
 ui['stage-terrain'].addEventListener('click', toggleTerrainMode);
 ui['pit-done'].addEventListener('click', toggleTerrainMode);
 ui['pit-delete'].addEventListener('click', () => {
-  if (stageEditor.selectedPit === null) return;
-  setStagePits(arena.pits.filter(pit => pit !== stageEditor.selectedPit));
+  const region = stageEditor.selectedPit;
+  if (region === null) return;
+  setStagePits(arena.pits.filter(pit => !region.parts.includes(pit)));
 });
 function setStagePits(pits) {
   stageEditor.draft.pits = arena.pits = pits;
@@ -1925,23 +1996,27 @@ function previewPit(from, to) {
   const x0 = snap(from.x, arena.x), x1 = snap(to.x, arena.x);
   const z0 = snap(from.z, arena.z), z1 = snap(to.z, arena.z);
   const pit = {left: Math.min(x0,x1), right: Math.max(x0,x1), front: Math.min(z0,z1), back: Math.max(z0,z1)};
-  const error = pitBoundsError(pit, arena)
-    || (arena.pits.length >= maxPits ? '바닥 구멍은 최대 ' + maxPits + '개까지 넣을 수 있어.' : '')
+  const boundsError = pitBoundsError(pit, arena);
+  const pits = boundsError ? arena.pits : addPitRectangle(arena.pits, pit);
+  const error = boundsError
+    || (pits.length > maxPits ? '구멍을 구성하는 사각형은 최대 ' + maxPits + '개까지 넣을 수 있어.' : '')
     || (deploy.units.some(unit => unitOverPit(unit, [pit])) ? '배치한 적과 구멍이 겹쳐. 다른 곳에 그려줘.' : '');
-  stageEditor.pitPreview = {pit, error};
-  ui.hint.textContent = error || '놓으면 바닥 구멍 추가';
+  stageEditor.pitPreview = {pit, pits, error};
+  const joins = arena.pits.some(other => pitsOverlap(pit, other));
+  ui.hint.textContent = error || (joins ? '놓으면 겹친 구멍과 합치기' : '놓으면 바닥 구멍 추가');
   ui.hint.dataset.error = Boolean(error);
   needsPaint = true;
 }
 function finishPit(ground, point) {
   if (point.dragged) {
     previewPit(point.ground, ground);
-    const {pit, error} = stageEditor.pitPreview;
+    const {pits, error} = stageEditor.pitPreview;
     stageEditor.pitPreview = null;
-    if (!error) setStagePits([...arena.pits, pit]);
+    if (!error) setStagePits(pits);
     else needsPaint = true;
   } else {
-    stageEditor.selectedPit = arena.pits.findLast(pit => insidePit(ground, pit)) ?? null;
+    stageEditor.selectedPit = pitRegions(arena.pits).findLast(region =>
+      region.parts.some(pit => insidePit(ground, pit))) ?? null;
     updateDeploy();
   }
 }
@@ -2674,11 +2749,16 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
   ctx.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
   ctx.clearRect(0, 0, camera.w, camera.h);
   ctx.textAlign = 'center';
-  for (const pit of arena.pits) {
-    const selected = stageEditor.selectedPit === pit;
+  for (const region of pitRegions(arena.pits)) {
+    const selected = stageEditor.selectedPit === region;
     ctx.strokeStyle = selected ? '#f6d393' : '#638487';
     ctx.lineWidth = selected ? 2 : 1;
-    groundRectangle(ctx, pit.left, pit.front, pit.right, pit.back, .03);
+    ctx.beginPath();
+    for (const [x0,z0,x1,z1] of region.edges) {
+      const start = project(x0, .03, z0), end = project(x1, .03, z1);
+      ctx.moveTo(start.x, start.y);
+      ctx.lineTo(end.x, end.y);
+    }
     ctx.stroke();
   }
   if (stageEditor.pitPreview) {
