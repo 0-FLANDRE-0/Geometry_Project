@@ -30,6 +30,7 @@ button:disabled { opacity: .37; cursor: default; }
 #arena, #marks, .scene-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 #arena { touch-action: none; cursor: grab; }
 #arena:active { cursor: grabbing; }
+#app[data-terrain="true"] #arena { cursor: crosshair; }
 #marks, .scene-canvas { pointer-events: none; }
 .view-tools {
   position: absolute; z-index: 2; top: max(10px, env(safe-area-inset-top));
@@ -95,6 +96,7 @@ button:disabled { opacity: .37; cursor: default; }
   display: grid; justify-items: start; gap: 5px;
 }
 .stage-tools .btn { min-height: 38px; padding-inline: 9px; }
+#terrain-bar { display: flex; flex-wrap: wrap; width: fit-content; }
 .stage-tools a.btn { display: inline-flex; align-items: center; color: inherit; text-decoration: none; }
 .stage-tools a[aria-disabled="true"] { opacity: .37; cursor: default; }
 .stage-tools a.btn:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
@@ -119,7 +121,9 @@ button:disabled { opacity: .37; cursor: default; }
 .stage-form-dimensions { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 6px; }
 .stage-form-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .stage-form-error { margin: 0; color: #f6d393; font-size: 12px; }
-#stage-mirror[aria-pressed="true"] { color: var(--mint); border-color: #76c8b5; background: #223a38; }
+#stage-mirror[aria-pressed="true"], #stage-terrain[aria-pressed="true"] {
+  color: var(--mint); border-color: #76c8b5; background: #223a38;
+}
 @media (orientation: landscape) and (max-width: 1370px) {
   .controls { max-width: 330px; }
   .bar { display: grid; width: 330px; }
@@ -157,6 +161,7 @@ button:disabled { opacity: .37; cursor: default; }
       <button class="btn" id="stage-edit" type="button">스테이지 편집</button>
       <div class="stage-editor-actions" id="stage-edit-tools" hidden>
         <button class="btn" id="stage-settings" type="button">맵 설정</button>
+        <button class="btn" id="stage-terrain" type="button" aria-pressed="false">바닥 구멍</button>
         <button class="btn" id="stage-load" type="button">JSON 열기</button>
         <a class="btn" id="stage-save" href="#" download>JSON 저장</a>
         <button class="btn launch" id="stage-test" type="button">시험 배치</button>
@@ -235,6 +240,10 @@ button:disabled { opacity: .37; cursor: default; }
         <button class="btn launch" id="back">다시 배치</button>
       </div>
     </div>
+    <div class="bar" id="terrain-bar" hidden>
+      <button class="btn" id="pit-delete" type="button" disabled>선택한 구멍 삭제</button>
+      <button class="btn launch" id="pit-done" type="button">대형 배치로</button>
+    </div>
   </footer>
   <dialog class="stage-dialog" id="stage-dialog" aria-labelledby="stage-dialog-title">
     <h2 id="stage-dialog-title">맵 설정</h2>
@@ -259,6 +268,7 @@ button:disabled { opacity: .37; cursor: default; }
 const byId = id => document.getElementById(id);
 const ui = Object.fromEntries([
   'app', 'stage-edit', 'stage-edit-tools', 'stage-caption', 'stage-settings', 'stage-load', 'stage-save', 'stage-test',
+  'stage-terrain', 'terrain-bar', 'pit-delete', 'pit-done',
   'stage-free', 'stage-file', 'stage-mirror', 'stage-cancel-group', 'stage-dialog', 'stage-form',
   'stage-name', 'stage-width', 'stage-depth', 'stage-enemy-percent', 'stage-form-error', 'stage-close-settings',
   'arena', 'marks', 'hint', 'unit-circle', 'unit-triangle', 'unit-square', 'unit-diamond', 'unit-trapezoid', 'unit-hexagon',
@@ -324,12 +334,15 @@ const shellRadius = .24;
 const shellTrailLength = 1.65;
 const impactDuration = .48;
 const hitscanTraceDuration = .18;
-const defaultArena = {x: 35, z: 35, split: 0};
+const defaultArena = {x: 35, z: 35, split: 0, pits: []};
+const maxPits = 32;
+const terrainRoutes = new Map();
 const arena = {...defaultArena};
 const deploy = {type: 'circle', count: 10, rows: 2, anchor: null, groups: [], units: [], ready: false, preview: null};
 const stageEditor = {
-  mode: 'sandbox', draft: {name: '새 스테이지', width: 70, depth: 70, enemyZonePercent: 50, groups: []},
-  sandboxGroups: deploy.groups, selected: null, mirror: false, notice: null, loadRequest: 0
+  mode: 'sandbox', draft: {name: '새 스테이지', width: 70, depth: 70, enemyZonePercent: 50, pits: [], groups: []},
+  sandboxGroups: deploy.groups, selected: null, mirror: false, notice: null, loadRequest: 0,
+  terrainMode: false, selectedPit: null, pitPreview: null
 };
 const state = {phase: 'deploy', elapsed: 0, clockTenths: -1, units: [], projectiles: [], waves: [], fields: [], impacts: [], alive: [0, 0]};
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(n, hi));
@@ -341,6 +354,17 @@ let needsPaint = true;
 
 function onMap({x,z}) {
   return Math.abs(x) <= arena.x && Math.abs(z) <= arena.z;
+}
+function terrainRadius(type) {
+  const spec = unitTypes[type];
+  return Math.max(spec.radius, (spec.width ?? 0) / 2, (spec.length ?? 0) / 2);
+}
+function insidePit({x,z}, pit, margin = 0) {
+  return x > pit.left - margin + 1e-8 && x < pit.right + margin - 1e-8
+    && z > pit.front - margin + 1e-8 && z < pit.back + margin - 1e-8;
+}
+function unitOverPit(unit, pits) {
+  return pits.some(pit => insidePit(unit, pit, terrainRadius(unit.type)));
 }
 function makeFormation({anchor, count, rows, type, mirror}, layout, occupied, requiredTeam = null) {
   if (!anchor) return {units: [], team: null, bounds: null, mirrorBounds: null, error: ''};
@@ -384,6 +408,8 @@ function makeFormation({anchor, count, rows, type, mirror}, layout, occupied, re
   } else if (mirrorBounds && Math.abs(anchor.x) < halfWidth + .10
       && units.some(unit => reflected.some(other => bodiesTooClose(unit, other, .10)))) {
     error = '좌우 대형이 겹쳐. 중앙선에서 조금 더 떨어뜨려줘.';
+  } else if (layout.pits.length && placed.some(unit => unitOverPit(unit, layout.pits))) {
+    error = '유닛이 바닥 구멍에 걸쳐 있어. 대형을 옮겨줘.';
   } else if (placed.some(unit => occupied.some(other => bodiesTooClose(unit, other, .10)))) {
     error = '기존 유닛과 너무 가까워. 대형을 조금 옮겨줘.';
   }
@@ -427,7 +453,9 @@ function updateDeploy() {
   ui['stage-mirror'].setAttribute('aria-pressed', String(stageEditor.mirror));
   ui.start.hidden = editing;
   ui.start.disabled = !deploy.ready;
-  const hint = error || (selected ? '위치·유닛·인원을 바꾸고 수정 적용'
+  const hint = stageEditor.terrainMode
+    ? stageEditor.selectedPit ? '선택한 구멍을 삭제하거나 빈 바닥을 끌어 새 구멍 그리기' : '맵을 끌어 구멍 그리기 · 기존 구멍을 탭해 선택'
+    : error || (selected ? '위치·유닛·인원을 바꾸고 수정 적용'
     : deploy.anchor ? '미리보기를 잡아 이동 · 빈 곳을 끌어 회전'
     : editing ? '적 구역을 탭해 배치 · 저장된 대형을 탭해 수정'
     : testing ? '아군을 배치한 뒤 전투 시작'
@@ -438,7 +466,8 @@ function updateDeploy() {
 }
 function updatePhase() {
   needsPaint = true;
-  ui['deploy-bar'].hidden = state.phase !== 'deploy';
+  ui['deploy-bar'].hidden = state.phase !== 'deploy' || stageEditor.terrainMode;
+  ui['terrain-bar'].hidden = !stageEditor.terrainMode;
   ui['battle-bar'].hidden = state.phase === 'deploy';
   ui.result.hidden = state.phase !== 'result';
   ui.hint.hidden = state.phase !== 'deploy';
@@ -510,6 +539,7 @@ ui.start.addEventListener('click', () => {
   state.alive = [allies, state.units.length - allies];
   state.phase = 'battle';
   state.elapsed = 0;
+  delete state.terrainIdle;
   state.clockTenths = -1;
   ui.clock.textContent = '00.0';
   updatePhase();
@@ -527,14 +557,14 @@ ui.back.addEventListener('click', () => {
   updatePhase();
 });
 
-function stageArena({width, depth, enemyZonePercent}) {
-  return {x: width / 2, z: depth / 2, split: depth * (enemyZonePercent - 50) / 100};
+function stageArena({width, depth, enemyZonePercent, pits}) {
+  return {x: width / 2, z: depth / 2, split: depth * (enemyZonePercent - 50) / 100, pits};
 }
 function stageDocument(draft) {
-  const {width, depth, enemyZonePercent, name, groups} = draft;
+  const {width, depth, enemyZonePercent, name, groups, pits} = draft;
   return {
-    version: 1,
-    map: {width, depth, enemyZonePercent},
+    version: pits.length ? 2 : 1,
+    map: {width, depth, enemyZonePercent, ...(pits.length ? {pits} : {})},
     stage: {
       name,
       enemies: groups.map(({anchor, count, rows, type, mirror}) => ({
@@ -544,7 +574,7 @@ function stageDocument(draft) {
   };
 }
 function readStageDocument(documentData) {
-  if (documentData?.version !== 1) throw new Error('지원하는 스테이지 형식은 버전 1이야.');
+  if (![1, 2].includes(documentData?.version)) throw new Error('지원하는 스테이지 형식은 버전 1과 2야.');
   const {map, stage} = documentData;
   if (!map || !stage || typeof stage.name !== 'string' || !Array.isArray(stage.enemies)) {
     throw new Error('맵 정보, 스테이지 이름과 적 대형 목록이 필요해.');
@@ -558,7 +588,15 @@ function readStageDocument(documentData) {
   if (!Number.isInteger(enemyZonePercent) || enemyZonePercent < 15 || enemyZonePercent > 85) {
     throw new Error('적 구역은 맵 세로 길이의 15~85%로 설정해줘.');
   }
-  const layout = stageArena(map);
+  const pits = map.pits === undefined ? [] : map.pits;
+  if (!Array.isArray(pits) || pits.length > maxPits) throw new Error('바닥 구멍은 최대 ' + maxPits + '개까지 넣을 수 있어.');
+  const layout = stageArena({...map, pits: []});
+  for (const [index, pit] of pits.entries()) {
+    const error = pitBoundsError(pit, layout);
+    if (error) throw new Error('바닥 구멍 ' + (index + 1) + ' · ' + error);
+    const {left, right, front, back} = pit;
+    layout.pits.push({left, right, front, back});
+  }
   const groups = [], occupied = [];
   for (const [index, enemy] of stage.enemies.entries()) {
     if (!enemy || typeof enemy.type !== 'string' || !Object.hasOwn(unitTypes, enemy.type)
@@ -574,7 +612,15 @@ function readStageDocument(documentData) {
     groups.push({...group, units, team});
     for (const unit of units) occupied.push(unit);
   }
-  return {name, width, depth, enemyZonePercent, groups};
+  return {name, width, depth, enemyZonePercent, pits: layout.pits, groups};
+}
+function pitBoundsError(pit, layout) {
+  if (!pit || ![pit.left, pit.right, pit.front, pit.back].every(Number.isFinite)) return '좌표를 확인해줘.';
+  if (pit.right - pit.left < 1 || pit.back - pit.front < 1) return '구멍의 가로와 세로를 각각 1 이상으로 그려줘.';
+  if (pit.left < -layout.x || pit.right > layout.x || pit.front < -layout.z || pit.back > layout.z) {
+    return '구멍 전체를 맵 안에 넣어줘.';
+  }
+  return '';
 }
 function clearStageSelection() {
   stageEditor.selected = null;
@@ -584,6 +630,8 @@ function setStageMode(mode) {
   resetBattle();
   stageEditor.mode = mode;
   stageEditor.notice = null;
+  stageEditor.terrainMode = false;
+  stageEditor.selectedPit = stageEditor.pitPreview = null;
   stageEditor.loadRequest++;
   ui.app.dataset.mode = mode;
   clearStageSelection();
@@ -592,6 +640,7 @@ function setStageMode(mode) {
   const layout = mode === 'sandbox' ? defaultArena : stageArena(stageEditor.draft);
   const resized = layout.x !== arena.x || layout.z !== arena.z;
   Object.assign(arena, layout);
+  terrainRoutes.clear();
   if (resized) resetCamera();
   rebuildDeployment();
   updatePhase();
@@ -603,12 +652,17 @@ function updateStageTools() {
   ui['stage-edit'].textContent = testing ? '편집으로' : '스테이지 편집';
   ui['stage-edit-tools'].hidden = !editing;
   ui['stage-settings'].disabled = Boolean(selected);
+  ui['stage-terrain'].disabled = Boolean(selected);
+  ui['stage-terrain'].setAttribute('aria-pressed', String(stageEditor.terrainMode));
+  ui.app.dataset.terrain = String(stageEditor.terrainMode);
+  ui['pit-delete'].disabled = stageEditor.selectedPit === null;
   ui['stage-save'].setAttribute('aria-disabled', String(Boolean(selected)));
   ui['stage-test'].disabled = !draft.groups.length || Boolean(selected);
   const caption = ui['stage-caption'];
   caption.hidden = mode === 'sandbox';
   const text = notice?.text ?? (draft.name + ' · ' + draft.width + ' × ' + draft.depth
-    + ' · 적 ' + draft.groups.reduce((sum, group) => sum + group.units.length, 0) + '기');
+    + ' · 적 ' + draft.groups.reduce((sum, group) => sum + group.units.length, 0) + '기'
+    + (draft.pits.length ? ' · 구멍 ' + draft.pits.length + '개' : ''));
   if (caption.textContent !== text) caption.textContent = text;
   caption.dataset.error = Boolean(notice?.error);
 }
@@ -625,6 +679,24 @@ ui['stage-cancel-group'].addEventListener('click', () => {
   clearStageSelection();
   updateDeploy();
 });
+function toggleTerrainMode() {
+  stageEditor.terrainMode = !stageEditor.terrainMode;
+  stageEditor.selectedPit = stageEditor.pitPreview = null;
+  clearStageSelection();
+  updatePhase();
+}
+ui['stage-terrain'].addEventListener('click', toggleTerrainMode);
+ui['pit-done'].addEventListener('click', toggleTerrainMode);
+ui['pit-delete'].addEventListener('click', () => {
+  if (stageEditor.selectedPit === null) return;
+  setStagePits(arena.pits.filter(pit => pit !== stageEditor.selectedPit));
+});
+function setStagePits(pits) {
+  stageEditor.draft.pits = arena.pits = pits;
+  terrainRoutes.clear();
+  stageEditor.selectedPit = stageEditor.pitPreview = null;
+  updateDeploy();
+}
 ui['stage-settings'].addEventListener('click', () => {
   const {name, width, depth, enemyZonePercent} = stageEditor.draft;
   ui['stage-name'].value = name;
@@ -831,7 +903,163 @@ function turnTowards(heading, targetHeading, maxStep) {
   const turn = Math.atan2(Math.sin(offset), Math.cos(offset));
   return Math.abs(turn) <= maxStep ? targetHeading : heading + Math.sign(turn) * maxStep;
 }
+// Test the open interiors of the rectangles so a unit can slide along an edge.
+function pitTravelFraction(from, dx, dz, blocks) {
+  let fraction = 1;
+  for (const {left, right, front, back} of blocks) {
+    let entry = 0, exit = fraction;
+    if (Math.abs(dx) < 1e-10) {
+      if (from.x <= left + 1e-8 || from.x >= right - 1e-8) continue;
+    } else {
+      const a = (left - from.x) / dx, b = (right - from.x) / dx;
+      entry = Math.max(entry, Math.min(a, b));
+      exit = Math.min(exit, Math.max(a, b));
+    }
+    if (Math.abs(dz) < 1e-10) {
+      if (from.z <= front + 1e-8 || from.z >= back - 1e-8) continue;
+    } else {
+      const a = (front - from.z) / dz, b = (back - from.z) / dz;
+      entry = Math.max(entry, Math.min(a, b));
+      exit = Math.min(exit, Math.max(a, b));
+    }
+    if (entry < exit - 1e-10) fraction = entry;
+  }
+  return fraction;
+}
+function clearPitLine(from, to, blocks) {
+  return pitTravelFraction(from, to.x - from.x, to.z - from.z, blocks) === 1;
+}
+function terrainGraph(type) {
+  const radius = terrainRadius(type);
+  const cached = terrainRoutes.get(radius);
+  if (cached) return cached;
+  const blocks = arena.pits.map(pit => ({
+    left: pit.left - radius, right: pit.right + radius,
+    front: pit.front - radius, back: pit.back + radius
+  }));
+  const xLimit = arena.x - radius, zLimit = arena.z - radius;
+  const corners = [];
+  for (const block of blocks) {
+    for (const x of [block.left - .04, block.right + .04]) {
+      for (const z of [block.front - .04, block.back + .04]) {
+        const point = {x, z};
+        if (Math.abs(x) <= xLimit && Math.abs(z) <= zLimit && !blocks.some(other => insidePit(point, other))) {
+          corners.push(point);
+        }
+      }
+    }
+  }
+  const edges = corners.map(() => []);
+  for (let i = 0; i < corners.length; i++) {
+    for (let j = i + 1; j < corners.length; j++) {
+      if (!clearPitLine(corners[i], corners[j], blocks)) continue;
+      const length = Math.sqrt(distance2(corners[i], corners[j]));
+      edges[i].push({index: j, length});
+      edges[j].push({index: i, length});
+    }
+  }
+  const graph = {blocks, corners, edges, xLimit, zLimit};
+  terrainRoutes.set(radius, graph);
+  return graph;
+}
+function nearestPitGoal(goal, {blocks, corners, xLimit, zLimit}) {
+  const clampPoint = ({x,z}) => ({x: clamp(x, -xLimit, xLimit), z: clamp(z, -zLimit, zLimit)});
+  const point = clampPoint(goal);
+  const containing = blocks.filter(block => insidePit(point, block));
+  if (!containing.length) return point;
+  let best = null, distance = Infinity;
+  const candidates = [...corners];
+  for (const {left, right, front, back} of containing) {
+    candidates.push(clampPoint({x: left - .04, z: point.z}), clampPoint({x: right + .04, z: point.z}),
+      clampPoint({x: point.x, z: front - .04}), clampPoint({x: point.x, z: back + .04}));
+  }
+  for (const candidate of candidates) {
+    const range = distance2(candidate, goal);
+    if (range < distance && !blocks.some(block => insidePit(candidate, block))) {
+      best = candidate;
+      distance = range;
+    }
+  }
+  return best;
+}
+function findPitRoute(start, goal, {blocks, corners, edges}) {
+  const cost = corners.map(point => clearPitLine(start, point, blocks) ? Math.sqrt(distance2(start, point)) : Infinity);
+  const finishCost = corners.map(point => clearPitLine(point, goal, blocks) ? Math.sqrt(distance2(point, goal)) : Infinity);
+  const previous = corners.map(() => -1);
+  const visited = new Set();
+  let finish = -1, best = Infinity;
+  for (let step = 0; step < corners.length; step++) {
+    let closest = -1, length = best;
+    for (let i = 0; i < corners.length; i++) {
+      if (!visited.has(i) && cost[i] < length) { closest = i; length = cost[i]; }
+    }
+    if (closest === -1) break;
+    if (length + finishCost[closest] < best) {
+      finish = closest;
+      best = length + finishCost[closest];
+    }
+    visited.add(closest);
+    for (const edge of edges[closest]) {
+      const next = length + edge.length;
+      if (next < cost[edge.index]) {
+        cost[edge.index] = next;
+        previous[edge.index] = closest;
+      }
+    }
+  }
+  if (finish === -1) return null;
+  const route = [goal];
+  for (let i = finish; i !== -1; i = previous[i]) route.push(corners[i]);
+  return route.reverse();
+}
+function pitWaypoint(unit, destination) {
+  const graph = terrainGraph(unit.type);
+  const goal = nearestPitGoal(destination, graph);
+  if (!goal || distance2(unit, goal) < 1e-8) return null;
+  if (clearPitLine(unit, goal, graph.blocks)) {
+    unit.pitRoute = null;
+    return goal;
+  }
+  let route = unit.pitRoute;
+  if (!route || distance2(route.goal, goal) > 1 || (route.points
+      ? !clearPitLine(unit, route.points[0], graph.blocks)
+      : state.elapsed >= route.retryAt)) {
+    route = {goal, points: findPitRoute(unit, goal, graph), retryAt: state.elapsed + .5};
+    unit.pitRoute = route;
+  }
+  if (!route.points) return null;
+  while (route.points.length > 1 && clearPitLine(unit, route.points[1], graph.blocks)) route.points.shift();
+  return route.points[0];
+}
+function moveOnGround(unit, dx, dz) {
+  if (!arena.pits.length) {
+    unit.x += dx;
+    unit.z += dz;
+    return;
+  }
+  const {blocks, xLimit, zLimit} = terrainGraph(unit.type);
+  dx = clamp(unit.x + dx, -xLimit, xLimit) - unit.x;
+  dz = clamp(unit.z + dz, -zLimit, zLimit) - unit.z;
+  const fraction = pitTravelFraction(unit, dx, dz, blocks);
+  unit.x += dx * fraction;
+  unit.z += dz * fraction;
+  if (fraction < 1) {
+    dx *= 1 - fraction;
+    dz *= 1 - fraction;
+    unit.x += dx * pitTravelFraction(unit, dx, 0, blocks);
+    unit.z += dz * pitTravelFraction(unit, 0, dz, blocks);
+  }
+}
 function steer(unit, spec, living, dx, dz, gap) {
+  if (arena.pits.length) {
+    const waypoint = pitWaypoint(unit, {x: unit.x + dx * gap, z: unit.z + dz * gap});
+    if (!waypoint) return;
+    const x = waypoint.x - unit.x, z = waypoint.z - unit.z;
+    gap = Math.hypot(x, z);
+    if (gap < 1e-8) return;
+    dx = x / gap;
+    dz = z / gap;
+  }
   let forward = Infinity, side = 0;
   const maxSeparation = spec.radius + maxUnitRadius;
   const search2 = (maxSeparation + .42) ** 2 + (maxSeparation * .88) ** 2 + 1e-8;
@@ -848,7 +1076,14 @@ function steer(unit, spec, living, dx, dz, gap) {
       side = Math.abs(lateral) > .018 ? -Math.sign(lateral) : (sharedTurn || unit.id % 2 ? 1 : -1);
     }
   }
-  if (side) [dx, dz] = [dx - dz * side * .82, dz + dx * side * .82];
+  if (side) {
+    const aroundX = dx - dz * side * .82, aroundZ = dz + dx * side * .82;
+    const probe = Math.min(spec.moveSpeed * tick, gap) / Math.hypot(aroundX, aroundZ);
+    if (!arena.pits.length || pitTravelFraction(unit, aroundX * probe, aroundZ * probe, terrainGraph(unit.type).blocks) === 1) {
+      dx = aroundX;
+      dz = aroundZ;
+    }
+  }
   const step = Math.min(spec.moveSpeed * tick, gap) / Math.hypot(dx, dz);
   unit.vx = dx * step;
   unit.vz = dz * step;
@@ -863,6 +1098,7 @@ function assignEscortSlots(living) {
   const reserved = [], pending = [];
   const available = (point, clearance, occupants) =>
     Math.abs(point.x) <= arena.x - escort.radius && Math.abs(point.z) <= arena.z - escort.radius
+    && !unitOverPit(point, arena.pits)
     && !reserved.some(slot => slot.team === point.team && distance2(point, slot) < clearance ** 2)
     && !occupants.some(ally => ally.team === point.team && !unitTypes[ally.type].escort && bodiesTooClose(point, ally, .12));
   // Reserve valid existing positions before assigning the vacant ones.
@@ -1027,8 +1263,7 @@ function moveUnits(living) {
   const holdOrigins = new Map();
   for (const unit of living) {
     if (unit.beamShot || unitTypes[unit.type].holdsGround) holdOrigins.set(unit, {x: unit.x, z: unit.z});
-    unit.x += unit.vx;
-    unit.z += unit.vz;
+    moveOnGround(unit, unit.vx, unit.vz);
   }
   separateUnits(living, holdOrigins);
 }
@@ -1111,8 +1346,8 @@ function separateUnits(living, holdOrigins) {
             const totalWeight = aWeight + bWeight;
             const aShare = depth * (aWeight / totalWeight);
             const bShare = depth * (bWeight / totalWeight);
-            a.x -= normalX * aShare; a.z -= normalZ * aShare;
-            b.x += normalX * bShare; b.z += normalZ * bShare;
+            moveOnGround(a, -normalX * aShare, -normalZ * aShare);
+            moveOnGround(b, normalX * bShare, normalZ * bShare);
           }
           updateCell(j);
           updateCell(i);
@@ -1453,6 +1688,7 @@ function advanceWaves(living, damage) {
 function simulate() {
   state.elapsed += tick;
   const living = state.units.filter(unit => unit.hp > 0);
+  const beforeMove = arena.pits.length ? living.map(({x,z}) => ({x,z})) : null;
   if (state.waves.length) {
     for (const unit of living) { unit.previousX = unit.x; unit.previousZ = unit.z; }
   }
@@ -1528,6 +1764,10 @@ function simulate() {
       else applyMeleeHit(unit, target, spec, damage);
     }
   }
+  const activeTerrainBattle = beforeMove && (damage.some(amount => amount > 0) || state.projectiles.length
+    || state.waves.length || state.fields.length || living.some((unit, index) => unit.beamShot
+      || distance2(unit, beforeMove[index]) > 1e-6));
+  if (beforeMove) state.terrainIdle = activeTerrainBattle ? 0 : (state.terrainIdle ?? 0) + tick;
   // Resolve each wave of death bursts together. Already defeated units cannot roll again.
   let deathBursts = resolveDamage(living, damage, spent);
   while (deathBursts.length) {
@@ -1541,15 +1781,16 @@ function simulate() {
     ui.clock.textContent = (tenths / 10).toFixed(1).padStart(4, '0');
   }
   const [allies, enemies] = state.alive;
-  if ((allies && enemies) || state.projectiles.length) return;
+  const stalled = allies && enemies && state.terrainIdle >= 8 - 1e-8;
+  if ((allies && enemies && !stalled) || state.projectiles.length) return;
   if (state.waves.some(wave => living.some(unit => unit.hp > 0 && unit.team !== wave.team && !wave.hit.has(unit.id)))) return;
   if (state.fields.some(field => living.some(unit => unit.hp > 0 && unit.team !== field.team
       && distance2(unit, field) <= field.attack.radius ** 2))) return;
   state.waves = [];
   state.fields = [];
   state.phase = 'result';
-  ui.verdict.textContent = allies ? '아군 승리' : enemies ? '적군 승리' : '무승부';
-  ui.summary.textContent = ui.clock.textContent + '초';
+  ui.verdict.textContent = stalled ? '무승부' : allies ? '아군 승리' : enemies ? '적군 승리' : '무승부';
+  ui.summary.textContent = stalled ? '8초간 이동과 피해 없음' : ui.clock.textContent + '초';
   updatePhase();
 }
 
@@ -1679,22 +1920,52 @@ function previewSide(screen, ground) {
     || contains(area, groundPoint(screen.x, screen.y + bodyHeightOnScreen));
   return hits(bounds) ? 1 : mirrorBounds && hits(mirrorBounds) ? -1 : 0;
 }
+function previewPit(from, to) {
+  const snap = (value, extent) => clamp(Math.round(value * 2) / 2, -extent, extent);
+  const x0 = snap(from.x, arena.x), x1 = snap(to.x, arena.x);
+  const z0 = snap(from.z, arena.z), z1 = snap(to.z, arena.z);
+  const pit = {left: Math.min(x0,x1), right: Math.max(x0,x1), front: Math.min(z0,z1), back: Math.max(z0,z1)};
+  const error = pitBoundsError(pit, arena)
+    || (arena.pits.length >= maxPits ? '바닥 구멍은 최대 ' + maxPits + '개까지 넣을 수 있어.' : '')
+    || (deploy.units.some(unit => unitOverPit(unit, [pit])) ? '배치한 적과 구멍이 겹쳐. 다른 곳에 그려줘.' : '');
+  stageEditor.pitPreview = {pit, error};
+  ui.hint.textContent = error || '놓으면 바닥 구멍 추가';
+  ui.hint.dataset.error = Boolean(error);
+  needsPaint = true;
+}
+function finishPit(ground, point) {
+  if (point.dragged) {
+    previewPit(point.ground, ground);
+    const {pit, error} = stageEditor.pitPreview;
+    stageEditor.pitPreview = null;
+    if (!error) setStagePits([...arena.pits, pit]);
+    else needsPaint = true;
+  } else {
+    stageEditor.selectedPit = arena.pits.findLast(pit => insidePit(ground, pit)) ?? null;
+    updateDeploy();
+  }
+}
 ui.arena.addEventListener('pointerdown', event => {
   if (![0, 1, 2].includes(event.button) || pointers.size >= 2) return;
   const screen = viewportPoint(event.clientX, event.clientY);
   const ground = groundPoint(screen.x, screen.y);
   const canPlace = state.phase === 'deploy' && event.button === 0 && !event.shiftKey && onMap(ground);
   const pan = event.button === 1 || event.shiftKey;
-  const side = canPlace ? previewSide(screen, ground) : 0;
+  const terrain = canPlace && stageEditor.terrainMode;
+  const side = canPlace && !terrain ? previewSide(screen, ground) : 0;
   const grabbed = side ? deploy.anchor : null;
   const point = {
     x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY,
-    canPlace, pan, grabbed, side, ground, dragged: false
+    canPlace, terrain, pan, grabbed, side, ground, dragged: false
   };
   const first = pointers.values().next().value;
   pointers.set(event.pointerId, point);
   if (pointers.size === 2) {
     multiTouch = true;
+    if (stageEditor.pitPreview) {
+      stageEditor.pitPreview = null;
+      updateDeploy();
+    }
     if (first.grabbed && first.dragged) {
       deploy.anchor = first.grabbed;
       updateDeploy();
@@ -1724,7 +1995,9 @@ ui.arena.addEventListener('pointermove', event => {
     const dx = x - (point.dragged ? point.x : point.startX);
     const dy = y - (point.dragged ? point.y : point.startY);
     point.dragged = true;
-    if (point.grabbed && state.phase === 'deploy') {
+    if (point.terrain && stageEditor.terrainMode) {
+      previewPit(point.ground, eventGround(event));
+    } else if (point.grabbed && state.phase === 'deploy') {
       const ground = eventGround(event);
       setAnchor(point.grabbed.x + point.side * (ground.x - point.ground.x), point.grabbed.z + ground.z - point.ground.z);
     } else if (point.pan) panCamera(dx, dy);
@@ -1737,10 +2010,17 @@ for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
   ui.arena.addEventListener(type, event => {
     const point = pointers.get(event.pointerId);
     if (!point) return;
-    if (type === 'pointerup' && !multiTouch && point.canPlace && !point.dragged && state.phase === 'deploy') {
+    if (type === 'pointerup' && !multiTouch && point.terrain && stageEditor.terrainMode) {
+      finishPit(eventGround(event), point);
+    } else if (type === 'pointerup' && !multiTouch && point.canPlace && !point.terrain && !point.dragged
+        && state.phase === 'deploy' && !stageEditor.terrainMode) {
       const screen = viewportPoint(event.clientX, event.clientY);
       const ground = groundPoint(screen.x, screen.y);
       if (onMap(ground)) selectOrSetAnchor(ground, screen);
+    }
+    if (type !== 'pointerup' && stageEditor.pitPreview) {
+      stageEditor.pitPreview = null;
+      updateDeploy();
     }
     pointers.delete(event.pointerId);
     if (!pointers.size) {
@@ -1757,7 +2037,7 @@ ui.arena.addEventListener('wheel', event => {
     viewportPoint(event.clientX, event.clientY));
 }, {passive: false});
 ui.arena.addEventListener('keydown', event => {
-  if (event.key === 'Enter' && state.phase === 'deploy' && !deploy.anchor) {
+  if (event.key === 'Enter' && state.phase === 'deploy' && !stageEditor.terrainMode && !deploy.anchor) {
     event.preventDefault();
     const z = stageEditor.mode === 'edit' ? (arena.split - arena.z) / 2
       : stageEditor.mode === 'test' ? (arena.split + arena.z) / 2
@@ -2019,16 +2299,43 @@ function createCanvasScene(ctx) {
 function createRenderer(scene) {
   const draw = scene.draw;
   const slabs = [];
-  let floorX, floorZ, floorSplit;
-  function slab(x, y, z, width, depth, color) { slabs.push({x,y,z,width,depth,color}); }
+  let floorX, floorZ, floorSplit, floorPits;
+  function slab(x, y, z, width, depth, color) {
+    if (!arena.pits.length) {
+      slabs.push({x,y,z,width,depth,color});
+      return;
+    }
+    let pieces = [{left: x - width / 2, right: x + width / 2, front: z - depth / 2, back: z + depth / 2}];
+    for (const pit of arena.pits) {
+      pieces = pieces.flatMap(piece => {
+        const {left, right, front, back} = piece;
+        const cutLeft = Math.max(left, pit.left), cutRight = Math.min(right, pit.right);
+        const cutFront = Math.max(front, pit.front), cutBack = Math.min(back, pit.back);
+        if (cutLeft >= cutRight || cutFront >= cutBack) return [piece];
+        return [
+          {left, right, front, back: cutFront}, {left, right, front: cutBack, back},
+          {left, right: cutLeft, front: cutFront, back: cutBack},
+          {left: cutRight, right, front: cutFront, back: cutBack}
+        ].filter(part => part.left < part.right && part.front < part.back);
+      });
+    }
+    for (const {left, right, front, back} of pieces) {
+      slabs.push({x: (left + right) / 2, y, z: (front + back) / 2, width: right - left, depth: back - front, color});
+    }
+  }
   function updateFloor() {
-    const {x: halfWidth, z: halfDepth, split} = arena;
-    if (floorX === halfWidth && floorZ === halfDepth && floorSplit === split) return;
+    const {x: halfWidth, z: halfDepth, split, pits} = arena;
+    if (floorX === halfWidth && floorZ === halfDepth && floorSplit === split && floorPits === pits) return;
     floorX = halfWidth;
     floorZ = halfDepth;
     floorSplit = split;
+    floorPits = pits;
     slabs.length = 0;
     const width = 2 * halfWidth, depth = 2 * halfDepth;
+    for (const pit of pits) {
+      slabs.push({x: (pit.left + pit.right) / 2, y: -.48, z: (pit.front + pit.back) / 2,
+        width: pit.right - pit.left, depth: pit.back - pit.front, color: [.038,.065,.079]});
+    }
     slab(0,-.18,0,width + 1.5,depth + 1.5,[.17,.23,.24]);
     slab(0,-.02,0,width,depth,[.12,.17,.18]);
     slab(0,.002,(split - halfDepth) / 2,width,halfDepth + split,[.218,.162,.170]);
@@ -2367,6 +2674,24 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
   ctx.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
   ctx.clearRect(0, 0, camera.w, camera.h);
   ctx.textAlign = 'center';
+  for (const pit of arena.pits) {
+    const selected = stageEditor.selectedPit === pit;
+    ctx.strokeStyle = selected ? '#f6d393' : '#638487';
+    ctx.lineWidth = selected ? 2 : 1;
+    groundRectangle(ctx, pit.left, pit.front, pit.right, pit.back, .03);
+    ctx.stroke();
+  }
+  if (stageEditor.pitPreview) {
+    const {pit, error} = stageEditor.pitPreview;
+    ctx.strokeStyle = error ? '#ffab97' : '#f6d393';
+    ctx.fillStyle = error ? '#ffab9730' : '#f6d39330';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4,4]);
+    groundRectangle(ctx, pit.left, pit.front, pit.right, pit.back, .04);
+    ctx.fill();
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
   for (const field of state.fields) drawDamageField(ctx, field);
   for (const wave of state.waves) drawPulseWave(ctx, wave);
   for (const impact of state.impacts) {
