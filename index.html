@@ -89,6 +89,37 @@ button:disabled { opacity: .37; cursor: default; }
 .result-card h1 { font-size: clamp(24px, 5vw, 43px); letter-spacing: -.055em; margin: 3px 0 4px; }
 .result-card p { margin: 0; color: var(--muted); font-size: 12px; }
 .error-card { color: var(--coral); pointer-events: auto; }
+.stage-tools {
+  position: absolute; z-index: 2; top: max(10px, env(safe-area-inset-top));
+  left: max(10px, env(safe-area-inset-left)); max-width: calc(100% - 118px);
+  display: grid; justify-items: start; gap: 5px;
+}
+.stage-tools .btn { min-height: 38px; padding-inline: 9px; }
+.stage-tools a.btn { display: inline-flex; align-items: center; color: inherit; text-decoration: none; }
+.stage-tools a[aria-disabled="true"] { opacity: .37; cursor: default; }
+.stage-tools a.btn:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+.stage-editor-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.stage-caption {
+  max-width: 100%; padding: 4px 8px; border-radius: 5px; background: #101d20ee;
+  color: var(--muted); font-size: 11px; overflow-wrap: anywhere;
+}
+.stage-caption[data-error="true"] { color: #f6d393; }
+.stage-dialog {
+  width: min(380px, calc(100% - 24px)); max-height: calc(100% - 24px);
+  padding: 16px; border: 1px solid #58726e; border-radius: 9px; background: var(--surface); color: var(--ink);
+}
+.stage-dialog::backdrop { background: #081214b8; }
+.stage-dialog h2 { margin: 0 0 12px; font-size: 18px; }
+.stage-form { display: grid; gap: 10px; }
+.stage-form label { display: grid; gap: 4px; color: #bfceca; font-size: 12px; }
+.stage-form input {
+  width: 100%; min-height: 38px; padding: 6px 9px; border: 1px solid #3d5252;
+  border-radius: 5px; background: #0d171a; color: var(--ink); font: inherit;
+}
+.stage-form-dimensions { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 6px; }
+.stage-form-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.stage-form-error { margin: 0; color: #f6d393; font-size: 12px; }
+#stage-mirror[aria-pressed="true"] { color: var(--mint); border-color: #76c8b5; background: #223a38; }
 @media (orientation: landscape) and (max-width: 1370px) {
   .controls { max-width: 330px; }
   .bar { display: grid; width: 330px; }
@@ -100,6 +131,14 @@ button:disabled { opacity: .37; cursor: default; }
   .stepper input { width: 39px; }
   .actions { display: grid; grid-template-columns: 1fr 1fr; }
   .place { grid-column: 1 / -1; grid-row: 1; }
+  #app:not([data-mode="sandbox"]) #deploy-bar { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  #app:not([data-mode="sandbox"]) #deploy-bar .unit-picker,
+  #app:not([data-mode="sandbox"]) #deploy-bar .actions { grid-column: 1 / -1; }
+  #app:not([data-mode="sandbox"]) #deploy-bar .field { display: grid; }
+  #app:not([data-mode="sandbox"]) #deploy-bar .stepper { justify-content: space-between; }
+  #app:not([data-mode="sandbox"]) #deploy-bar .actions { display: flex; }
+  #app:not([data-mode="sandbox"]) #deploy-bar .btn { min-height: 37px; }
+  #app:not([data-mode="sandbox"]) #deploy-bar .actions .btn { flex: 1; padding-inline: 4px; }
 }
 @media (orientation: portrait) and (max-width: 550px) {
   .bar { flex-wrap: wrap; }
@@ -110,10 +149,22 @@ button:disabled { opacity: .37; cursor: default; }
 </style>
 </head>
 <body>
-<div id="app">
+<div id="app" data-mode="sandbox">
   <main class="stage" aria-label="훈련장">
     <canvas id="arena" tabindex="0" aria-label="3D 전장. 탭해서 대형 위치 지정. 한 손가락으로 회전, 두 손가락으로 시점 이동과 확대."></canvas>
     <canvas id="marks" aria-hidden="true"></canvas>
+    <div class="stage-tools" role="group" aria-label="스테이지">
+      <button class="btn" id="stage-edit" type="button">스테이지 편집</button>
+      <div class="stage-editor-actions" id="stage-edit-tools" hidden>
+        <button class="btn" id="stage-settings" type="button">맵 설정</button>
+        <button class="btn" id="stage-load" type="button">JSON 열기</button>
+        <a class="btn" id="stage-save" href="#" download>JSON 저장</a>
+        <button class="btn launch" id="stage-test" type="button">시험 배치</button>
+        <button class="btn" id="stage-free" type="button">자유 배치</button>
+      </div>
+      <div class="stage-caption" id="stage-caption" role="status" hidden></div>
+      <input id="stage-file" type="file" accept=".json,application/json" hidden>
+    </div>
     <div class="view-tools" role="group" aria-label="카메라 조작">
       <button class="btn" id="fullscreen" type="button" aria-pressed="false">전체화면</button>
       <div class="zoom-tools">
@@ -172,6 +223,8 @@ button:disabled { opacity: .37; cursor: default; }
       </div>
       <div class="actions">
         <button class="btn" id="undo">되돌리기</button>
+        <button class="btn" id="stage-cancel-group" type="button" hidden>선택 해제</button>
+        <button class="btn" id="stage-mirror" type="button" aria-pressed="false" hidden>좌우 미러</button>
         <button class="btn place" id="place">이 위치에 배치</button>
         <button class="btn launch" id="start">전투 시작</button>
       </div>
@@ -183,12 +236,31 @@ button:disabled { opacity: .37; cursor: default; }
       </div>
     </div>
   </footer>
+  <dialog class="stage-dialog" id="stage-dialog" aria-labelledby="stage-dialog-title">
+    <h2 id="stage-dialog-title">맵 설정</h2>
+    <form class="stage-form" id="stage-form">
+      <label>스테이지 이름 <input id="stage-name" type="text" maxlength="80" required></label>
+      <div class="stage-form-dimensions">
+        <label>가로 <input id="stage-width" type="number" min="16" max="160" step="1" inputmode="numeric" required></label>
+        <label>세로 <input id="stage-depth" type="number" min="16" max="160" step="1" inputmode="numeric" required></label>
+        <label>적 구역 (%) <input id="stage-enemy-percent" type="number" min="15" max="85" step="1" inputmode="numeric" required></label>
+      </div>
+      <p class="stage-form-error" id="stage-form-error" role="alert" hidden></p>
+      <div class="stage-form-actions">
+        <button class="btn" id="stage-close-settings" type="button">취소</button>
+        <button class="btn launch" type="submit">적용</button>
+      </div>
+    </form>
+  </dialog>
 </div>
 <script src="./vendor/three-r187.min.js"></script>
 <script>
 'use strict';
 const byId = id => document.getElementById(id);
 const ui = Object.fromEntries([
+  'app', 'stage-edit', 'stage-edit-tools', 'stage-caption', 'stage-settings', 'stage-load', 'stage-save', 'stage-test',
+  'stage-free', 'stage-file', 'stage-mirror', 'stage-cancel-group', 'stage-dialog', 'stage-form',
+  'stage-name', 'stage-width', 'stage-depth', 'stage-enemy-percent', 'stage-form-error', 'stage-close-settings',
   'arena', 'marks', 'hint', 'unit-circle', 'unit-triangle', 'unit-square', 'unit-diamond', 'unit-trapezoid', 'unit-hexagon',
   'unit-pentagon', 'unit-beamPentagon', 'unit-octagon', 'unit-wall', 'unit-piercing', 'unit-spread', 'unit-escort', 'unit-bomber', 'unit-fieldHexagon',
   'count', 'count-down', 'count-up', 'rows', 'rows-down', 'rows-up', 'undo', 'place',
@@ -252,8 +324,13 @@ const shellRadius = .24;
 const shellTrailLength = 1.65;
 const impactDuration = .48;
 const hitscanTraceDuration = .18;
-const arena = { x: 35, z: 35 };
+const defaultArena = {x: 35, z: 35, split: 0};
+const arena = {...defaultArena};
 const deploy = {type: 'circle', count: 10, rows: 2, anchor: null, groups: [], units: [], ready: false, preview: null};
+const stageEditor = {
+  mode: 'sandbox', draft: {name: '새 스테이지', width: 70, depth: 70, enemyZonePercent: 50, groups: []},
+  sandboxGroups: deploy.groups, selected: null, mirror: false, notice: null, loadRequest: 0
+};
 const state = {phase: 'deploy', elapsed: 0, clockTenths: -1, units: [], projectiles: [], waves: [], fields: [], impacts: [], alive: [0, 0]};
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(n, hi));
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -265,18 +342,18 @@ let needsPaint = true;
 function onMap({x,z}) {
   return Math.abs(x) <= arena.x && Math.abs(z) <= arena.z;
 }
-function makePreview() {
-  const {anchor, count, rows, type} = deploy;
-  if (!anchor) return {units: [], team: null, bounds: null, error: ''};
-  const team = anchor.z < 0 ? 1 : 0;
+function makeFormation({anchor, count, rows, type, mirror}, layout, occupied, requiredTeam = null) {
+  if (!anchor) return {units: [], team: null, bounds: null, mirrorBounds: null, error: ''};
+  const team = anchor.z < layout.split ? 1 : 0;
   const spec = unitTypes[type];
   const width = spec.width ?? 2 * spec.radius, length = spec.length ?? 2 * spec.radius;
   const spacingX = (spec.box ? width : 2 * spec.radius) + .5;
   const spacingZ = (spec.box ? length : 2 * spec.radius) + .5;
   const halfWidth = (Math.ceil(count / rows) - 1) * spacingX / 2 + width / 2;
   const halfDepth = (rows - 1) * spacingZ / 2 + length / 2;
-  if (halfWidth > arena.x || halfDepth * 2 > arena.z) {
-    return {units: [], team, bounds: null, error: '대형이 한 구역보다 커. 인원이나 줄 수를 조절해줘.'};
+  const zoneDepth = team === 1 ? layout.z + layout.split : layout.z - layout.split;
+  if (halfWidth > layout.x || halfDepth * 2 > zoneDepth + 1e-8) {
+    return {units: [], team, bounds: null, mirrorBounds: null, error: '대형이 한 구역보다 커. 인원이나 줄 수를 조절해줘.'};
   }
   const bounds = {
     left: anchor.x - halfWidth, right: anchor.x + halfWidth,
@@ -293,14 +370,31 @@ function makePreview() {
       });
     }
   }
+  const mirrorBounds = mirror && anchor.x !== 0
+    ? {...bounds, left: -bounds.right, right: -bounds.left}
+    : null;
+  const reflected = mirrorBounds ? units.map(unit => ({...unit, x: -unit.x})) : [];
+  const placed = mirrorBounds ? units.concat(reflected) : units;
   let error = '';
-  if (bounds.left < -arena.x || bounds.right > arena.x || bounds.front < -arena.z || bounds.back > arena.z
-      || (bounds.front < 0 && bounds.back > 0)) {
+  if (requiredTeam !== null && team !== requiredTeam) {
+    error = requiredTeam === 1 ? '적 구역에 대형을 배치해줘.' : '아군 구역에 대형을 배치해줘.';
+  } else if (bounds.left < -layout.x || bounds.right > layout.x || bounds.front < -layout.z || bounds.back > layout.z
+      || (bounds.front < layout.split - 1e-8 && bounds.back > layout.split + 1e-8)) {
     error = '대형 전체를 한 진영의 구역 안에 놓아줘.';
-  } else if (units.some(u => deploy.units.some(v => bodiesTooClose(u, v, .10)))) {
+  } else if (mirrorBounds && Math.abs(anchor.x) < halfWidth + .10
+      && units.some(unit => reflected.some(other => bodiesTooClose(unit, other, .10)))) {
+    error = '좌우 대형이 겹쳐. 중앙선에서 조금 더 떨어뜨려줘.';
+  } else if (placed.some(unit => occupied.some(other => bodiesTooClose(unit, other, .10)))) {
     error = '기존 유닛과 너무 가까워. 대형을 조금 옮겨줘.';
   }
-  return {units, team, bounds, error};
+  return {units: placed, team, bounds, mirrorBounds, error};
+}
+function makePreview() {
+  const editing = stageEditor.mode === 'edit';
+  const selected = stageEditor.selected;
+  const occupied = selected ? deploy.groups.filter(group => group !== selected).flatMap(group => group.units) : deploy.units;
+  const requiredTeam = editing ? 1 : stageEditor.mode === 'test' ? 0 : null;
+  return makeFormation({...deploy, mirror: editing && stageEditor.mirror}, arena, occupied, requiredTeam);
 }
 function rebuildDeployment() {
   deploy.units = deploy.groups.flatMap(group => group.units);
@@ -308,8 +402,11 @@ function rebuildDeployment() {
 }
 function updateDeploy() {
   needsPaint = true;
+  stageEditor.notice = null;
   deploy.preview = makePreview();
   const {units, team, error} = deploy.preview;
+  const editing = stageEditor.mode === 'edit', testing = stageEditor.mode === 'test';
+  const selected = stageEditor.selected;
   for (const key of ['count', 'rows']) {
     if (document.activeElement !== ui[key]) ui[key].value = deploy[key];
   }
@@ -320,15 +417,24 @@ function updateDeploy() {
   ui['rows-down'].disabled = deploy.rows <= 1;
   ui['rows-up'].disabled = deploy.rows >= deploy.count;
   ui.place.disabled = !units.length || Boolean(error);
-  ui.place.textContent = team === null ? '여기에 배치' : team === 0 ? '아군 배치' : '적 배치';
-  ui.place.dataset.team = team ?? '';
-  ui.undo.disabled = !deploy.groups.length;
+  ui.place.textContent = editing ? selected ? '수정 적용' : '적 대형 추가'
+    : testing ? '아군 배치' : team === null ? '여기에 배치' : team === 0 ? '아군 배치' : '적 배치';
+  ui.place.dataset.team = editing ? 1 : testing ? 0 : team ?? '';
+  ui.undo.disabled = testing ? !deploy.groups.some(group => group.team === 0) : !deploy.groups.length;
+  ui.undo.textContent = selected ? '대형 삭제' : '되돌리기';
+  ui['stage-cancel-group'].hidden = !selected;
+  ui['stage-mirror'].hidden = !editing;
+  ui['stage-mirror'].setAttribute('aria-pressed', String(stageEditor.mirror));
+  ui.start.hidden = editing;
   ui.start.disabled = !deploy.ready;
-  const hint = error || (deploy.anchor
-    ? '미리보기를 잡아 이동 · 빈 곳을 끌어 회전'
+  const hint = error || (selected ? '위치·유닛·인원을 바꾸고 수정 적용'
+    : deploy.anchor ? '미리보기를 잡아 이동 · 빈 곳을 끌어 회전'
+    : editing ? '적 구역을 탭해 배치 · 저장된 대형을 탭해 수정'
+    : testing ? '아군을 배치한 뒤 전투 시작'
     : '맵을 탭해 위치 지정 · 양쪽 배치 후 전투 시작');
   if (ui.hint.textContent !== hint) ui.hint.textContent = hint;
   ui.hint.dataset.error = Boolean(error);
+  updateStageTools();
 }
 function updatePhase() {
   needsPaint = true;
@@ -337,6 +443,7 @@ function updatePhase() {
   ui.result.hidden = state.phase !== 'result';
   ui.hint.hidden = state.phase !== 'deploy';
   if (state.phase === 'deploy') updateDeploy();
+  else updateStageTools();
 }
 function setFormationSize(key, value) {
   if (!Number.isSafeInteger(value) || value < 1) return;
@@ -361,23 +468,36 @@ ui.place.addEventListener('click', () => {
   const {units, team, error} = deploy.preview;
   if (state.phase !== 'deploy' || !units.length || error) return;
   const {anchor, count, rows, type} = deploy;
-  deploy.groups.push({anchor, count, rows, units, team, type});
+  const group = {anchor, count, rows, units, team, type, mirror: stageEditor.mode === 'edit' && stageEditor.mirror};
+  if (stageEditor.selected) {
+    deploy.groups[deploy.groups.indexOf(stageEditor.selected)] = group;
+    stageEditor.selected = null;
+  } else deploy.groups.push(group);
   deploy.anchor = null;
   rebuildDeployment();
   updateDeploy();
 });
 ui.undo.addEventListener('click', () => {
+  if (stageEditor.selected) {
+    deploy.groups.splice(deploy.groups.indexOf(stageEditor.selected), 1);
+    clearStageSelection();
+    rebuildDeployment();
+    updateDeploy();
+    return;
+  }
+  if (stageEditor.mode === 'test' && deploy.groups.at(-1)?.team !== 0) return;
   const group = deploy.groups.pop();
   if (!group) return;
   deploy.type = group.type;
   deploy.count = group.count;
   deploy.rows = group.rows;
   deploy.anchor = group.anchor;
+  if (stageEditor.mode === 'edit') stageEditor.mirror = group.mirror;
   rebuildDeployment();
   updateDeploy();
 });
 ui.start.addEventListener('click', () => {
-  if (state.phase !== 'deploy' || !deploy.ready) return;
+  if (state.phase !== 'deploy' || stageEditor.mode === 'edit' || !deploy.ready) return;
   state.units = deploy.units.map((unit, id) => ({
     ...unit, id, hp: unitTypes[unit.type].hp, cooldown: 0, hurt: 0, swing: 0, fade: 0,
     vx: 0, vz: 0, aimX: 0, aimZ: 0, heading: unit.team === 0 ? Math.PI : 0
@@ -394,14 +514,178 @@ ui.start.addEventListener('click', () => {
   ui.clock.textContent = '00.0';
   updatePhase();
 });
-ui.back.addEventListener('click', () => {
+function resetBattle() {
   state.phase = 'deploy';
   state.units = [];
   state.projectiles = [];
   state.waves = [];
   state.fields = [];
   state.impacts = [];
+}
+ui.back.addEventListener('click', () => {
+  resetBattle();
   updatePhase();
+});
+
+function stageArena({width, depth, enemyZonePercent}) {
+  return {x: width / 2, z: depth / 2, split: depth * (enemyZonePercent - 50) / 100};
+}
+function stageDocument(draft) {
+  const {width, depth, enemyZonePercent, name, groups} = draft;
+  return {
+    version: 1,
+    map: {width, depth, enemyZonePercent},
+    stage: {
+      name,
+      enemies: groups.map(({anchor, count, rows, type, mirror}) => ({
+        type, count, rows, x: anchor.x, z: anchor.z, ...(mirror ? {mirror: true} : {})
+      }))
+    }
+  };
+}
+function readStageDocument(documentData) {
+  if (documentData?.version !== 1) throw new Error('지원하는 스테이지 형식은 버전 1이야.');
+  const {map, stage} = documentData;
+  if (!map || !stage || typeof stage.name !== 'string' || !Array.isArray(stage.enemies)) {
+    throw new Error('맵 정보, 스테이지 이름과 적 대형 목록이 필요해.');
+  }
+  const name = stage.name.trim();
+  if (!name || name.length > 80) throw new Error('스테이지 이름을 1~80자로 입력해줘.');
+  const {width, depth, enemyZonePercent} = map;
+  if (![width, depth].every(size => Number.isInteger(size) && size >= 16 && size <= 160)) {
+    throw new Error('가로와 세로는 16~160 사이 정수로 입력해줘.');
+  }
+  if (!Number.isInteger(enemyZonePercent) || enemyZonePercent < 15 || enemyZonePercent > 85) {
+    throw new Error('적 구역은 맵 세로 길이의 15~85%로 설정해줘.');
+  }
+  const layout = stageArena(map);
+  const groups = [], occupied = [];
+  for (const [index, enemy] of stage.enemies.entries()) {
+    if (!enemy || typeof enemy.type !== 'string' || !Object.hasOwn(unitTypes, enemy.type)
+        || !Number.isSafeInteger(enemy.count) || !Number.isSafeInteger(enemy.rows)
+        || enemy.rows < 1 || enemy.rows > enemy.count || !Number.isFinite(enemy.x) || !Number.isFinite(enemy.z)
+        || (enemy.mirror !== undefined && typeof enemy.mirror !== 'boolean')) {
+      throw new Error('적 대형 ' + (index + 1) + '의 유닛 종류, 인원, 줄 수, 좌표를 확인해줘.');
+    }
+    const group = {anchor: {x: enemy.x, z: enemy.z}, count: enemy.count, rows: enemy.rows,
+      type: enemy.type, mirror: enemy.mirror === true};
+    const {units, team, error} = makeFormation(group, layout, occupied, 1);
+    if (error) throw new Error('적 대형 ' + (index + 1) + ' · ' + error);
+    groups.push({...group, units, team});
+    for (const unit of units) occupied.push(unit);
+  }
+  return {name, width, depth, enemyZonePercent, groups};
+}
+function clearStageSelection() {
+  stageEditor.selected = null;
+  deploy.anchor = null;
+}
+function setStageMode(mode) {
+  resetBattle();
+  stageEditor.mode = mode;
+  stageEditor.notice = null;
+  stageEditor.loadRequest++;
+  ui.app.dataset.mode = mode;
+  clearStageSelection();
+  deploy.groups = mode === 'sandbox' ? stageEditor.sandboxGroups
+    : mode === 'edit' ? stageEditor.draft.groups : [...stageEditor.draft.groups];
+  const layout = mode === 'sandbox' ? defaultArena : stageArena(stageEditor.draft);
+  const resized = layout.x !== arena.x || layout.z !== arena.z;
+  Object.assign(arena, layout);
+  if (resized) resetCamera();
+  rebuildDeployment();
+  updatePhase();
+}
+function updateStageTools() {
+  const {mode, draft, selected, notice} = stageEditor;
+  const editing = mode === 'edit', testing = mode === 'test';
+  ui['stage-edit'].hidden = editing || (mode === 'sandbox' && state.phase !== 'deploy');
+  ui['stage-edit'].textContent = testing ? '편집으로' : '스테이지 편집';
+  ui['stage-edit-tools'].hidden = !editing;
+  ui['stage-settings'].disabled = Boolean(selected);
+  ui['stage-save'].setAttribute('aria-disabled', String(Boolean(selected)));
+  ui['stage-test'].disabled = !draft.groups.length || Boolean(selected);
+  const caption = ui['stage-caption'];
+  caption.hidden = mode === 'sandbox';
+  const text = notice?.text ?? (draft.name + ' · ' + draft.width + ' × ' + draft.depth
+    + ' · 적 ' + draft.groups.reduce((sum, group) => sum + group.units.length, 0) + '기');
+  if (caption.textContent !== text) caption.textContent = text;
+  caption.dataset.error = Boolean(notice?.error);
+}
+ui['stage-edit'].addEventListener('click', () => setStageMode('edit'));
+ui['stage-free'].addEventListener('click', () => setStageMode('sandbox'));
+ui['stage-test'].addEventListener('click', () => {
+  if (stageEditor.draft.groups.length && !stageEditor.selected) setStageMode('test');
+});
+ui['stage-mirror'].addEventListener('click', () => {
+  stageEditor.mirror = !stageEditor.mirror;
+  updateDeploy();
+});
+ui['stage-cancel-group'].addEventListener('click', () => {
+  clearStageSelection();
+  updateDeploy();
+});
+ui['stage-settings'].addEventListener('click', () => {
+  const {name, width, depth, enemyZonePercent} = stageEditor.draft;
+  ui['stage-name'].value = name;
+  ui['stage-width'].value = width;
+  ui['stage-depth'].value = depth;
+  ui['stage-enemy-percent'].value = enemyZonePercent;
+  ui['stage-form-error'].hidden = true;
+  ui['stage-dialog'].showModal();
+});
+ui['stage-close-settings'].addEventListener('click', () => ui['stage-dialog'].close());
+ui['stage-form'].addEventListener('submit', event => {
+  event.preventDefault();
+  try {
+    stageEditor.draft = readStageDocument(stageDocument({...stageEditor.draft,
+      name: ui['stage-name'].value,
+      width: ui['stage-width'].valueAsNumber,
+      depth: ui['stage-depth'].valueAsNumber,
+      enemyZonePercent: ui['stage-enemy-percent'].valueAsNumber
+    }));
+    ui['stage-dialog'].close();
+    setStageMode('edit');
+  } catch (error) {
+    ui['stage-form-error'].textContent = error.message;
+    ui['stage-form-error'].hidden = false;
+  }
+});
+ui['stage-load'].addEventListener('click', () => ui['stage-file'].click());
+ui['stage-file'].addEventListener('change', async () => {
+  const input = ui['stage-file'];
+  const file = input.files[0];
+  input.value = '';
+  if (!file || stageEditor.mode !== 'edit') return;
+  const request = ++stageEditor.loadRequest;
+  try {
+    const loaded = readStageDocument(JSON.parse(await file.text()));
+    if (request !== stageEditor.loadRequest) return;
+    stageEditor.draft = loaded;
+    setStageMode('edit');
+  } catch (error) {
+    if (request !== stageEditor.loadRequest) return;
+    stageEditor.notice = {
+      text: error instanceof SyntaxError ? 'JSON 파일 형식을 확인해줘.' : '불러오기 실패 · ' + error.message,
+      error: true
+    };
+    updateStageTools();
+  }
+});
+ui['stage-save'].addEventListener('click', event => {
+  if (stageEditor.selected) {
+    event.preventDefault();
+    return;
+  }
+  const draft = stageEditor.draft;
+  const json = JSON.stringify(stageDocument(draft), null, 2) + '\n';
+  const url = URL.createObjectURL(new Blob([json], {type: 'application/json'}));
+  const link = ui['stage-save'];
+  link.href = url;
+  link.download = draft.name.replace(/[^\p{L}\p{N}_-]+/gu, '-') + '.json';
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  stageEditor.notice = {text: 'JSON 저장 · ' + link.download};
+  updateStageTools();
 });
 
 const tick = 1 / 60;
@@ -419,8 +703,6 @@ const escortSlotOffsets = [
 ];
 const maxUnitRadius = Math.max(...Object.values(unitTypes).map(spec => spec.radius));
 const collisionCellSize = 2 * maxUnitRadius;
-const collisionCols = Math.ceil(2 * arena.x / collisionCellSize);
-const collisionRows = Math.ceil(2 * arena.z / collisionCellSize);
 function rectangleFrame(unit, spec) {
   const heading = facingOf(unit);
   return {cos: Math.cos(heading), sin: Math.sin(heading), w: spec.width / 2, l: spec.length / 2};
@@ -751,6 +1033,8 @@ function moveUnits(living) {
   separateUnits(living, holdOrigins);
 }
 function separateUnits(living, holdOrigins) {
+  const collisionCols = Math.ceil(2 * arena.x / collisionCellSize);
+  const collisionRows = Math.ceil(2 * arena.z / collisionCellSize);
   const cells = new Array(collisionCols * collisionRows);
   const locations = new Int32Array(living.length);
   const radii = living.map(unit => unitTypes[unit.type].radius);
@@ -1342,12 +1626,13 @@ function groundRectangle(ctx, x0, z0, x1, z1, y) {
 
 ui['zoom-out'].addEventListener('click', () => turnCamera(0, 0, 1 / 1.36));
 ui['zoom-in'].addEventListener('click', () => turnCamera(0, 0, 1.36));
-ui['view-reset'].addEventListener('click', () => {
+function resetCamera() {
   camera.yaw = camera.targetX = camera.targetZ = 0;
   camera.pitch = overhead;
   camera.zoom = 1;
   updateCamera();
-});
+}
+ui['view-reset'].addEventListener('click', resetCamera);
 
 const pointers = new Map();
 let multiTouch = false;
@@ -1364,15 +1649,35 @@ function setAnchor(x, z) {
   deploy.anchor = {x: Math.round(x * 4) / 4, z: Math.round(z * 4) / 4};
   updateDeploy();
 }
-function onPreview(screen, ground) {
-  const bounds = deploy.preview?.bounds;
-  if (!bounds) return false;
-  const contains = ({x,z}) => x >= bounds.left - .5 && x <= bounds.right + .5
-    && z >= bounds.front - .5 && z <= bounds.back + .5;
+function selectOrSetAnchor(ground, screen) {
+  if (stageEditor.mode === 'edit' && !stageEditor.selected) {
+    const bodyGround = groundPoint(screen.x, screen.y + .40 * camera.cos * camera.scale);
+    const group = deploy.groups.findLast(group => group.units.some(unit =>
+      Math.min(distance2(unit, ground), distance2(unit, bodyGround)) <= (unitTypes[unit.type].radius + .55) ** 2));
+    if (group) {
+      stageEditor.selected = group;
+      stageEditor.mirror = group.mirror;
+      deploy.type = group.type;
+      deploy.count = group.count;
+      deploy.rows = group.rows;
+      const {x, z} = group.anchor;
+      deploy.anchor = {x: group.mirror && bodyGround.x * x < 0 ? -x : x, z};
+      updateDeploy();
+      return;
+    }
+  }
+  setAnchor(ground.x, ground.z);
+}
+function previewSide(screen, ground) {
+  const {bounds, mirrorBounds} = deploy.preview;
+  if (!bounds) return 0;
+  const contains = (area, {x,z}) => x >= area.left - .5 && x <= area.right + .5
+    && z >= area.front - .5 && z <= area.back + .5;
   const bodyHeightOnScreen = .48 * camera.cos * camera.scale;
-  return contains(ground)
-    || contains(groundPoint(screen.x, screen.y + bodyHeightOnScreen / 2))
-    || contains(groundPoint(screen.x, screen.y + bodyHeightOnScreen));
+  const hits = area => contains(area, ground)
+    || contains(area, groundPoint(screen.x, screen.y + bodyHeightOnScreen / 2))
+    || contains(area, groundPoint(screen.x, screen.y + bodyHeightOnScreen));
+  return hits(bounds) ? 1 : mirrorBounds && hits(mirrorBounds) ? -1 : 0;
 }
 ui.arena.addEventListener('pointerdown', event => {
   if (![0, 1, 2].includes(event.button) || pointers.size >= 2) return;
@@ -1380,10 +1685,11 @@ ui.arena.addEventListener('pointerdown', event => {
   const ground = groundPoint(screen.x, screen.y);
   const canPlace = state.phase === 'deploy' && event.button === 0 && !event.shiftKey && onMap(ground);
   const pan = event.button === 1 || event.shiftKey;
-  const grabbed = canPlace && onPreview(screen, ground) ? deploy.anchor : null;
+  const side = canPlace ? previewSide(screen, ground) : 0;
+  const grabbed = side ? deploy.anchor : null;
   const point = {
     x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY,
-    canPlace, pan, grabbed, ground, dragged: false
+    canPlace, pan, grabbed, side, ground, dragged: false
   };
   const first = pointers.values().next().value;
   pointers.set(event.pointerId, point);
@@ -1420,7 +1726,7 @@ ui.arena.addEventListener('pointermove', event => {
     point.dragged = true;
     if (point.grabbed && state.phase === 'deploy') {
       const ground = eventGround(event);
-      setAnchor(point.grabbed.x + ground.x - point.ground.x, point.grabbed.z + ground.z - point.ground.z);
+      setAnchor(point.grabbed.x + point.side * (ground.x - point.ground.x), point.grabbed.z + ground.z - point.ground.z);
     } else if (point.pan) panCamera(dx, dy);
     else turnCamera(dx, dy);
   }
@@ -1432,8 +1738,9 @@ for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
     const point = pointers.get(event.pointerId);
     if (!point) return;
     if (type === 'pointerup' && !multiTouch && point.canPlace && !point.dragged && state.phase === 'deploy') {
-      const ground = eventGround(event);
-      if (onMap(ground)) setAnchor(ground.x, ground.z);
+      const screen = viewportPoint(event.clientX, event.clientY);
+      const ground = groundPoint(screen.x, screen.y);
+      if (onMap(ground)) selectOrSetAnchor(ground, screen);
     }
     pointers.delete(event.pointerId);
     if (!pointers.size) {
@@ -1452,7 +1759,10 @@ ui.arena.addEventListener('wheel', event => {
 ui.arena.addEventListener('keydown', event => {
   if (event.key === 'Enter' && state.phase === 'deploy' && !deploy.anchor) {
     event.preventDefault();
-    setAnchor(camera.targetX, camera.targetZ || arena.z / 2);
+    const z = stageEditor.mode === 'edit' ? (arena.split - arena.z) / 2
+      : stageEditor.mode === 'test' ? (arena.split + arena.z) / 2
+      : camera.targetZ || arena.z / 2;
+    setAnchor(camera.targetX, z);
     return;
   }
   const move = {ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1]}[event.key];
@@ -1709,23 +2019,32 @@ function createCanvasScene(ctx) {
 function createRenderer(scene) {
   const draw = scene.draw;
   const slabs = [];
+  let floorX, floorZ, floorSplit;
   function slab(x, y, z, width, depth, color) { slabs.push({x,y,z,width,depth,color}); }
-  const width = arena.x * 2, depth = arena.z * 2;
-  slab(0,-.18,0,width + 1.5,depth + 1.5,[.17,.23,.24]);
-  slab(0,-.02,0,width,depth,[.12,.17,.18]);
-  slab(0,.002,-arena.z/2,width,arena.z,[.218,.162,.170]);
-  slab(0,.002,arena.z/2,width,arena.z,[.115,.223,.221]);
-  const line = [.19,.274,.274], major = [.23,.33,.33];
-  for (let x = -arena.x + 2.5; x < arena.x; x += 2.5) {
-    slab(x,.01,0,x % 10 === 0 ? .09 : .038,depth,x % 10 === 0 ? major : line);
+  function updateFloor() {
+    const {x: halfWidth, z: halfDepth, split} = arena;
+    if (floorX === halfWidth && floorZ === halfDepth && floorSplit === split) return;
+    floorX = halfWidth;
+    floorZ = halfDepth;
+    floorSplit = split;
+    slabs.length = 0;
+    const width = 2 * halfWidth, depth = 2 * halfDepth;
+    slab(0,-.18,0,width + 1.5,depth + 1.5,[.17,.23,.24]);
+    slab(0,-.02,0,width,depth,[.12,.17,.18]);
+    slab(0,.002,(split - halfDepth) / 2,width,halfDepth + split,[.218,.162,.170]);
+    slab(0,.002,(split + halfDepth) / 2,width,halfDepth - split,[.115,.223,.221]);
+    const line = [.19,.274,.274], major = [.23,.33,.33];
+    for (let x = -halfWidth + 2.5; x < halfWidth; x += 2.5) {
+      slab(x,.01,0,x % 10 === 0 ? .09 : .038,depth,x % 10 === 0 ? major : line);
+    }
+    for (let z = -halfDepth + 2.5; z < halfDepth; z += 2.5) {
+      if (Math.abs(z - split) < 1e-8) continue;
+      slab(0,.012,z,width,z % 10 === 0 ? .09 : .038,z % 10 === 0 ? major : line);
+    }
+    for (let x = -halfWidth + 1.5; x < halfWidth - 1; x += 3) slab(x,.02,split,1.62,.15,[.53,.70,.66]);
+    for (const x of [-halfWidth, halfWidth]) slab(x,.02,0,.18,depth,[.41,.56,.53]);
+    for (const z of [-halfDepth, halfDepth]) slab(0,.02,z,width,.18,z > 0 ? [.37,.65,.58] : [.55,.37,.35]);
   }
-  for (let z = -arena.z + 2.5; z < arena.z; z += 2.5) {
-    if (z === 0) continue;
-    slab(0,.012,z,width,z % 10 === 0 ? .09 : .038,z % 10 === 0 ? major : line);
-  }
-  for (let x = -arena.x + 1.5; x < arena.x - 1; x += 3) slab(x,.02,0,1.62,.15,[.53,.70,.66]);
-  for (const x of [-arena.x, arena.x]) slab(x,.02,0,.18,depth,[.41,.56,.53]);
-  for (const z of [-arena.z, arena.z]) slab(0,.02,z,width,.18,z > 0 ? [.37,.65,.58] : [.55,.37,.35]);
   const teams = [
     {body:[.25,.66,.57], rim:[.58,1,.87], cap:[.17,.46,.41], ghost:[.44,.92,.79]},
     {body:[.76,.35,.28], rim:[1,.67,.55], cap:[.58,.24,.20], ghost:[1,.43,.34]}
@@ -1767,6 +2086,7 @@ function createRenderer(scene) {
   return {
     render(units, preview, valid, projectiles) {
       scene.begin();
+      updateFloor();
       for (const floor of slabs) draw('plane',floor.x,floor.y,floor.z,floor.width,1,floor.depth,floor.color);
       const byDepth = (a, b) => (a.x - b.x) * camera.sinYaw + (a.z - b.z) * camera.cosYaw;
       for (const model of [...units].sort(byDepth)) unit(model);
@@ -2139,21 +2459,32 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
   }
   ctx.lineCap = 'butt';
   if (state.phase === 'deploy') {
-    const enemyTag = project(0,0,-arena.z * .74);
-    const allyTag = project(0,0,arena.z * .76);
+    if (stageEditor.mode === 'edit' && stageEditor.mirror) {
+      const from = project(0, .03, -arena.z), to = project(0, .03, arena.split);
+      ctx.strokeStyle = '#d2c9a8b0';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(to.x, to.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    const enemyTag = project(0,0,lerp(-arena.z, arena.split, .26));
+    const allyTag = project(0,0,lerp(arena.split, arena.z, .76));
     ctx.font = '700 ' + clamp(camera.scale * .94, 10, 13) + 'px system-ui';
     ctx.fillStyle = '#dcb3aa';
     ctx.fillText('적 배치 구역', enemyTag.x, enemyTag.y);
     ctx.fillStyle = '#9bd5c9';
     ctx.fillText('아군 배치 구역', allyTag.x, allyTag.y);
-    const bounds = deploy.preview.bounds;
-    if (bounds) {
-      ctx.strokeStyle = !valid ? '#f6d393e0' : deploy.preview.team === 1 ? '#ffab97bb' : '#8cebd6bb';
-      ctx.setLineDash([4,4]);
+    ctx.strokeStyle = !valid ? '#f6d393e0' : deploy.preview.team === 1 ? '#ffab97bb' : '#8cebd6bb';
+    ctx.setLineDash([4,4]);
+    for (const bounds of [deploy.preview.bounds, deploy.preview.mirrorBounds]) {
+      if (!bounds) continue;
       groundRectangle(ctx, bounds.left - .25, bounds.front - .25, bounds.right + .25, bounds.back + .25, 0);
       ctx.stroke();
-      ctx.setLineDash([]);
     }
+    ctx.setLineDash([]);
   }
 }
 
@@ -2199,7 +2530,9 @@ function boot() {
       unit.swing = Math.max(0, unit.swing - dt);
       unit.fade = Math.max(0, unit.fade - dt);
     }
-    const units = state.phase === 'deploy' ? deploy.units : state.units;
+    const selected = stageEditor.selected;
+    const units = state.phase !== 'deploy' ? state.units
+      : selected ? deploy.groups.filter(group => group !== selected).flatMap(group => group.units) : deploy.units;
     const preview = state.phase === 'deploy' ? deploy.preview.units : [];
     const valid = state.phase !== 'deploy' || !deploy.preview.error;
     renderer.render(units, preview, valid, state.projectiles);
