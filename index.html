@@ -234,8 +234,8 @@ const fieldHexagon = Object.freeze({ ...hexagon, shape: 'hexagon', damage: 75, e
 const pentagonChassis = { large: true, hp: 450, defense: .55, penetration: .65,
   radius: 1.85 / 2, moveSpeed: 1.45, attackRange: 18, approachRange: 4, hitscan: true };
 const pentagon = Object.freeze({ ...pentagonChassis, damage: 380, attackGap: 3.5, splashRadius: .8, splashDamage: 55 });
-const beamPentagon = Object.freeze({ ...pentagonChassis, shape: 'pentagon', damage: 220, attackGap: 6.5,
-  beam: Object.freeze({ width: 2.2, chargeTime: .6, edgeScale: .5 }) });
+const beamPentagon = Object.freeze({ ...pentagonChassis, shape: 'pentagon', damage: 195, defense: .45, penetration: .55, attackGap: 6.5,
+  beam: Object.freeze({ width: 1.25, chargeTime: .6, duration: 1.75, edgeDamage: 85, pulseInterval: .25, pulseDamage: 18 }) });
 const octagon = Object.freeze({ large: true, hp: 1000, damage: 25, defense: .80, penetration: 1,
   radius: 2.75 / 2, moveSpeed: .75, attackGap: 5, attackRange: 32, approachRange: 0,
   waveSpeed: 3.85, edgeDamage: 5, holdsGround: true });
@@ -674,7 +674,7 @@ function moveUnits(living) {
   let bomberDensity;
   for (const unit of living) {
     unit.vx = unit.vz = 0;
-    if (unit.beamFireAt !== undefined) continue;
+    if (unit.beamShot) continue;
     const spec = unitTypes[unit.type];
     const rooted = unit.rootedUntil > state.elapsed + 1e-8;
     if (rooted && !spec.box) continue;
@@ -744,7 +744,7 @@ function moveUnits(living) {
   }
   const holdOrigins = new Map();
   for (const unit of living) {
-    if (unitTypes[unit.type].holdsGround) holdOrigins.set(unit, {x: unit.x, z: unit.z});
+    if (unit.beamShot || unitTypes[unit.type].holdsGround) holdOrigins.set(unit, {x: unit.x, z: unit.z});
     unit.x += unit.vx;
     unit.z += unit.vz;
   }
@@ -807,22 +807,23 @@ function separateUnits(living, holdOrigins) {
             depth = contact - distance;
           }
           const opposing = a.team !== b.team;
-          const aOrigin = opposing && holdOrigins.get(a);
-          const bOrigin = opposing && holdOrigins.get(b);
+          const aOrigin = (opposing || a.beamShot) && holdOrigins.get(a);
+          const bOrigin = (opposing || b.beamShot) && holdOrigins.get(b);
           if (aOrigin && bOrigin) {
-            // Opposing anchors block each other's step rather than sliding each other back.
+            // Units holding their ground block each other's step.
             a.x = aOrigin.x; a.z = aOrigin.z;
             b.x = bOrigin.x; b.z = bOrigin.z;
           } else {
             let aWeight = 1, bWeight = 1;
             if (opposing) {
-              aWeight = aOrigin ? 0 : unitTypes[a.type].enemyPushWeight ?? 1;
-              bWeight = bOrigin ? 0 : unitTypes[b.type].enemyPushWeight ?? 1;
-            } else if (a.protectedAlly === b) {
-              bWeight = 0;
-            } else if (b.protectedAlly === a) {
-              aWeight = 0;
+              aWeight = unitTypes[a.type].enemyPushWeight ?? 1;
+              bWeight = unitTypes[b.type].enemyPushWeight ?? 1;
+            } else if (!aOrigin && !bOrigin) {
+              if (a.protectedAlly === b) bWeight = 0;
+              else if (b.protectedAlly === a) aWeight = 0;
             }
+            if (aOrigin) aWeight = 0;
+            if (bOrigin) bWeight = 0;
             const totalWeight = aWeight + bWeight;
             const aShare = depth * (aWeight / totalWeight);
             const bShare = depth * (bWeight / totalWeight);
@@ -1045,18 +1046,26 @@ function beamLane(unit, spec) {
   return {x: unit.x, z: unit.z, team: unit.team, dx: Math.sin(heading), dz: Math.cos(heading),
     range: spec.attackRange, halfWidth: spec.beam.width / 2};
 }
-function fireBeam(unit, spec, living, damage) {
+function applyBeamDamage(unit, spec, living, damage, opening) {
   const lane = beamLane(unit, spec);
+  const attack = {damage: spec.beam.pulseDamage, penetration: spec.penetration};
   for (const target of living) {
     if (target.team === unit.team) continue;
     const x = target.x - lane.x, z = target.z - lane.z;
     const along = x * lane.dx + z * lane.dz;
     const side = Math.abs(x * lane.dz - z * lane.dx);
     if (along < -1e-8 || along > lane.range + 1e-8 || side > lane.halfWidth + 1e-8) continue;
-    const scale = lerp(1, spec.beam.edgeScale, Math.min(1, side / lane.halfWidth));
-    damage[target.id] += damageAgainst(spec, target) * scale;
+    if (opening) attack.damage = lerp(spec.damage, spec.beam.edgeDamage, Math.min(1, side / lane.halfWidth));
+    damage[target.id] += damageAgainst(attack, target);
   }
-  state.impacts.push({...lane, beam: true, remaining: impactDuration});
+}
+function advanceBeam(unit, spec, living, damage) {
+  const shot = unit.beamShot;
+  const opening = shot.nextPulse === undefined;
+  if ((shot.nextPulse ?? shot.fireAt) > state.elapsed + 1e-8) return;
+  applyBeamDamage(unit, spec, living, damage, opening);
+  shot.nextPulse = (shot.nextPulse ?? shot.fireAt) + spec.beam.pulseInterval;
+  if (shot.nextPulse > shot.fireAt + spec.beam.duration + 1e-8) delete unit.beamShot;
 }
 function applyMeleeHit(attacker, target, spec, damage) {
   damage[target.id] += damageAgainst(spec, target);
@@ -1190,11 +1199,8 @@ function simulate() {
     const spec = unitTypes[unit.type];
     if (spec.burst) continue;
     unit.cooldown = Math.max(0, unit.cooldown - tick);
-    if (unit.beamFireAt !== undefined) {
-      if (state.elapsed + 1e-8 >= unit.beamFireAt) {
-        delete unit.beamFireAt;
-        fireBeam(unit, spec, living, damage);
-      }
+    if (unit.beamShot) {
+      advanceBeam(unit, spec, living, damage);
       continue;
     }
     if (unit.cooldown > 1e-8) continue;
@@ -1216,7 +1222,7 @@ function simulate() {
       launchShell(unit, target, spec);
     } else if (spec.beam) {
       unit.heading = Math.atan2(target.x - unit.x, target.z - unit.z);
-      unit.beamFireAt = state.elapsed + spec.beam.chargeTime;
+      unit.beamShot = {fireAt: state.elapsed + spec.beam.chargeTime};
     } else if (spec.hitscan) {
       fireHitscan(unit, target, spec, living, damage);
     } else if (spec.waveSpeed) {
@@ -2044,18 +2050,18 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
   for (const field of state.fields) drawDamageField(ctx, field);
   for (const wave of state.waves) drawPulseWave(ctx, wave);
   for (const impact of state.impacts) {
-    if (impact.beam) {
-      drawBeam(ctx, impact, (impact.remaining / impactDuration) ** 2);
-    } else {
-      drawShellImpact(ctx, impact);
-      if (impact.trace) drawHitscanEffect(ctx, impact);
-    }
+    drawShellImpact(ctx, impact);
+    if (impact.trace) drawHitscanEffect(ctx, impact);
   }
   for (const unit of units) {
     const spec = unitTypes[unit.type];
-    if (state.phase === 'battle' && unit.hp > 0 && unit.beamFireAt !== undefined) {
-      const charge = clamp(1 - (unit.beamFireAt - state.elapsed) / spec.beam.chargeTime, 0, 1);
-      drawBeam(ctx, beamLane(unit, spec), charge, true);
+    if (state.phase === 'battle' && unit.hp > 0 && unit.beamShot) {
+      const {fireAt, nextPulse} = unit.beamShot;
+      const charging = nextPulse === undefined;
+      const energy = charging
+        ? clamp(1 - (fireAt - state.elapsed) / spec.beam.chargeTime, 0, 1)
+        : .74 + .26 * clamp(1 - (state.elapsed - nextPulse + spec.beam.pulseInterval) / .10, 0, 1);
+      drawBeam(ctx, beamLane(unit, spec), energy, charging);
     }
     if (unit.hp > 0 && unit.rootedUntil > state.elapsed) {
       const point = project(unit.x, .04, unit.z);
