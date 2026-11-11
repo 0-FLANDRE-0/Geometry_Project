@@ -121,7 +121,7 @@ button:disabled { opacity: .37; cursor: default; }
 .stage-form-dimensions { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 6px; }
 .stage-form-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .stage-form-error { margin: 0; color: #f6d393; font-size: 12px; }
-#stage-mirror[aria-pressed="true"], #stage-terrain[aria-pressed="true"] {
+#stage-mirror[aria-pressed="true"], #stage-terrain[aria-pressed="true"], #stage-walls[aria-pressed="true"] {
   color: var(--mint); border-color: #76c8b5; background: #223a38;
 }
 @media (orientation: landscape) and (max-width: 1370px) {
@@ -162,6 +162,7 @@ button:disabled { opacity: .37; cursor: default; }
       <div class="stage-editor-actions" id="stage-edit-tools" hidden>
         <button class="btn" id="stage-settings" type="button">맵 설정</button>
         <button class="btn" id="stage-terrain" type="button" aria-pressed="false">바닥 구멍</button>
+        <button class="btn" id="stage-walls" type="button" aria-pressed="false">차단벽</button>
         <button class="btn" id="stage-load" type="button">JSON 열기</button>
         <a class="btn" id="stage-save" href="#" download>JSON 저장</a>
         <button class="btn launch" id="stage-test" type="button">시험 배치</button>
@@ -268,7 +269,7 @@ button:disabled { opacity: .37; cursor: default; }
 const byId = id => document.getElementById(id);
 const ui = Object.fromEntries([
   'app', 'stage-edit', 'stage-edit-tools', 'stage-caption', 'stage-settings', 'stage-load', 'stage-save', 'stage-test',
-  'stage-terrain', 'terrain-bar', 'pit-delete', 'pit-done',
+  'stage-terrain', 'stage-walls', 'terrain-bar', 'pit-delete', 'pit-done',
   'stage-free', 'stage-file', 'stage-mirror', 'stage-cancel-group', 'stage-dialog', 'stage-form',
   'stage-name', 'stage-width', 'stage-depth', 'stage-enemy-percent', 'stage-form-error', 'stage-close-settings',
   'arena', 'marks', 'hint', 'unit-circle', 'unit-triangle', 'unit-square', 'unit-diamond', 'unit-trapezoid', 'unit-hexagon',
@@ -331,19 +332,22 @@ const customCorners = {
 };
 const projectileRadius = .16;
 const shellRadius = .24;
+const shellHalfHeight = .10;
+const shellLaunchHeight = .224;
 const shellTrailLength = 1.65;
 const impactDuration = .48;
 const hitscanTraceDuration = .18;
-const defaultArena = {x: 35, z: 35, split: 0, pits: []};
-const maxPits = 32;
-const pitRegionCache = new WeakMap();
+const defaultArena = {x: 35, z: 35, split: 0, pits: [], walls: [], obstacles: []};
+const maxTerrainRectangles = 32;
+const wallHeight = 1.45;
+const terrainRegionCache = new WeakMap();
 const terrainRoutes = new Map();
 const arena = {...defaultArena};
 const deploy = {type: 'circle', count: 10, rows: 2, anchor: null, groups: [], units: [], ready: false, preview: null};
 const stageEditor = {
-  mode: 'sandbox', draft: {name: '새 스테이지', width: 70, depth: 70, enemyZonePercent: 50, pits: [], groups: []},
+  mode: 'sandbox', draft: {name: '새 스테이지', width: 70, depth: 70, enemyZonePercent: 50, pits: [], walls: [], groups: []},
   sandboxGroups: deploy.groups, selected: null, mirror: false, notice: null, loadRequest: 0,
-  terrainMode: false, selectedPit: null, pitPreview: null
+  terrainMode: null, selectedTerrain: null, terrainPreview: null
 };
 const state = {phase: 'deploy', elapsed: 0, clockTenths: -1, units: [], projectiles: [], waves: [], fields: [], impacts: [], alive: [0, 0]};
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(n, hi));
@@ -360,14 +364,14 @@ function terrainRadius(type) {
   const spec = unitTypes[type];
   return Math.max(spec.radius, (spec.width ?? 0) / 2, (spec.length ?? 0) / 2);
 }
-function insidePit({x,z}, pit, margin = 0) {
+function insideTerrain({x,z}, pit, margin = 0) {
   return x > pit.left - margin + 1e-8 && x < pit.right + margin - 1e-8
     && z > pit.front - margin + 1e-8 && z < pit.back + margin - 1e-8;
 }
-function pitsOverlap(a, b) {
+function terrainOverlaps(a, b) {
   return a.left < b.right && b.left < a.right && a.front < b.back && b.front < a.back;
 }
-function addPitRectangle(pits, pit) {
+function addTerrainRectangle(pits, pit) {
   const contains = (outer, inner) => outer.left <= inner.left && outer.right >= inner.right
     && outer.front <= inner.front && outer.back >= inner.back;
   const remaining = [...pits];
@@ -381,7 +385,7 @@ function addPitRectangle(pits, pit) {
     }
     const sameWidth = merged.left === other.left && merged.right === other.right;
     const sameDepth = merged.front === other.front && merged.back === other.back;
-    if ((sameWidth || sameDepth) && pitsOverlap(merged, other)) {
+    if ((sameWidth || sameDepth) && terrainOverlaps(merged, other)) {
       merged = {
         left: Math.min(merged.left, other.left), right: Math.max(merged.right, other.right),
         front: Math.min(merged.front, other.front), back: Math.max(merged.back, other.back)
@@ -393,7 +397,7 @@ function addPitRectangle(pits, pit) {
   remaining.push(merged);
   return remaining;
 }
-function pitRegionOutline(parts) {
+function terrainRegionOutline(parts) {
   const xs = [...new Set(parts.flatMap(pit => [pit.left, pit.right]))].sort((a,b) => a - b);
   const zs = [...new Set(parts.flatMap(pit => [pit.front, pit.back]))].sort((a,b) => a - b);
   // A cell is entirely inside or outside the union because the grid follows every rectangle edge.
@@ -412,8 +416,8 @@ function pitRegionOutline(parts) {
   }
   return edges;
 }
-function pitRegions(pits) {
-  const cached = pitRegionCache.get(pits);
+function terrainRegions(pits) {
+  const cached = terrainRegionCache.get(pits);
   if (cached) return cached;
   const ungrouped = new Set(pits);
   const regions = [];
@@ -422,18 +426,18 @@ function pitRegions(pits) {
     const parts = [seed];
     for (const part of parts) {
       for (const other of ungrouped) {
-        if (!pitsOverlap(part, other)) continue;
+        if (!terrainOverlaps(part, other)) continue;
         ungrouped.delete(other);
         parts.push(other);
       }
     }
-    regions.push({parts, edges: pitRegionOutline(parts)});
+    regions.push({parts, edges: terrainRegionOutline(parts)});
   }
-  pitRegionCache.set(pits, regions);
+  terrainRegionCache.set(pits, regions);
   return regions;
 }
-function unitOverPit(unit, pits) {
-  return pits.some(pit => insidePit(unit, pit, terrainRadius(unit.type)));
+function unitOverTerrain(unit, pits) {
+  return pits.some(pit => insideTerrain(unit, pit, terrainRadius(unit.type)));
 }
 function makeFormation({anchor, count, rows, type, mirror}, layout, occupied, requiredTeam = null) {
   if (!anchor) return {units: [], team: null, bounds: null, mirrorBounds: null, error: ''};
@@ -477,8 +481,10 @@ function makeFormation({anchor, count, rows, type, mirror}, layout, occupied, re
   } else if (mirrorBounds && Math.abs(anchor.x) < halfWidth + .10
       && units.some(unit => reflected.some(other => bodiesTooClose(unit, other, .10)))) {
     error = '좌우 대형이 겹쳐. 중앙선에서 조금 더 떨어뜨려줘.';
-  } else if (layout.pits.length && placed.some(unit => unitOverPit(unit, layout.pits))) {
+  } else if (layout.pits.length && placed.some(unit => unitOverTerrain(unit, layout.pits))) {
     error = '유닛이 바닥 구멍에 걸쳐 있어. 대형을 옮겨줘.';
+  } else if (layout.walls.length && placed.some(unit => unitOverTerrain(unit, layout.walls))) {
+    error = '유닛이 차단벽에 걸쳐 있어. 대형을 옮겨줘.';
   } else if (placed.some(unit => occupied.some(other => bodiesTooClose(unit, other, .10)))) {
     error = '기존 유닛과 너무 가까워. 대형을 조금 옮겨줘.';
   }
@@ -522,8 +528,9 @@ function updateDeploy() {
   ui['stage-mirror'].setAttribute('aria-pressed', String(stageEditor.mirror));
   ui.start.hidden = editing;
   ui.start.disabled = !deploy.ready;
+  const terrainLabel = stageEditor.terrainMode === 'walls' ? '차단벽' : '구멍';
   const hint = stageEditor.terrainMode
-    ? stageEditor.selectedPit ? '선택한 구멍을 삭제하거나 빈 바닥을 끌어 새 구멍 그리기' : '맵을 끌어 구멍 그리기 · 기존 구멍을 탭해 선택'
+    ? '맵을 끌어 ' + terrainLabel + ' 그리기 · 기존 ' + terrainLabel + '을 탭해 선택'
     : error || (selected ? '위치·유닛·인원을 바꾸고 수정 적용'
     : deploy.anchor ? '미리보기를 잡아 이동 · 빈 곳을 끌어 회전'
     : editing ? '적 구역을 탭해 배치 · 저장된 대형을 탭해 수정'
@@ -535,7 +542,7 @@ function updateDeploy() {
 }
 function updatePhase() {
   needsPaint = true;
-  ui['deploy-bar'].hidden = state.phase !== 'deploy' || stageEditor.terrainMode;
+  ui['deploy-bar'].hidden = state.phase !== 'deploy' || Boolean(stageEditor.terrainMode);
   ui['terrain-bar'].hidden = !stageEditor.terrainMode;
   ui['battle-bar'].hidden = state.phase === 'deploy';
   ui.result.hidden = state.phase !== 'result';
@@ -626,14 +633,15 @@ ui.back.addEventListener('click', () => {
   updatePhase();
 });
 
-function stageArena({width, depth, enemyZonePercent, pits}) {
-  return {x: width / 2, z: depth / 2, split: depth * (enemyZonePercent - 50) / 100, pits};
+function stageArena({width, depth, enemyZonePercent, pits, walls}) {
+  return {x: width / 2, z: depth / 2, split: depth * (enemyZonePercent - 50) / 100,
+    pits, walls, obstacles: [...pits, ...walls]};
 }
 function stageDocument(draft) {
-  const {width, depth, enemyZonePercent, name, groups, pits} = draft;
+  const {width, depth, enemyZonePercent, name, groups, pits, walls} = draft;
   return {
-    version: pits.length ? 2 : 1,
-    map: {width, depth, enemyZonePercent, ...(pits.length ? {pits} : {})},
+    version: walls.length ? 3 : pits.length ? 2 : 1,
+    map: {width, depth, enemyZonePercent, ...(pits.length ? {pits} : {}), ...(walls.length ? {walls} : {})},
     stage: {
       name,
       enemies: groups.map(({anchor, count, rows, type, mirror}) => ({
@@ -643,7 +651,7 @@ function stageDocument(draft) {
   };
 }
 function readStageDocument(documentData) {
-  if (![1, 2].includes(documentData?.version)) throw new Error('지원하는 스테이지 형식은 버전 1과 2야.');
+  if (![1, 2, 3].includes(documentData?.version)) throw new Error('지원하는 스테이지 형식은 버전 1~3이야.');
   const {map, stage} = documentData;
   if (!map || !stage || typeof stage.name !== 'string' || !Array.isArray(stage.enemies)) {
     throw new Error('맵 정보, 스테이지 이름과 적 대형 목록이 필요해.');
@@ -657,15 +665,22 @@ function readStageDocument(documentData) {
   if (!Number.isInteger(enemyZonePercent) || enemyZonePercent < 15 || enemyZonePercent > 85) {
     throw new Error('적 구역은 맵 세로 길이의 15~85%로 설정해줘.');
   }
-  const pits = map.pits === undefined ? [] : map.pits;
-  if (!Array.isArray(pits)) throw new Error('바닥 구멍 목록을 확인해줘.');
-  if (pits.length > maxPits) throw new Error('구멍을 구성하는 사각형은 최대 ' + maxPits + '개까지 넣을 수 있어.');
-  const layout = stageArena({...map, pits: []});
-  for (const [index, pit] of pits.entries()) {
-    const error = pitBoundsError(pit, layout);
-    if (error) throw new Error('바닥 구멍 ' + (index + 1) + ' · ' + error);
-    const {left, right, front, back} = pit;
-    layout.pits.push({left, right, front, back});
+  const layout = stageArena({...map, pits: [], walls: []});
+  for (const [kind, label] of [['pits', '바닥 구멍'], ['walls', '차단벽']]) {
+    const rectangles = map[kind] === undefined ? [] : map[kind];
+    if (!Array.isArray(rectangles)) throw new Error(label + ' 목록을 확인해줘.');
+    if (rectangles.length > maxTerrainRectangles) {
+      throw new Error(label + '을 구성하는 사각형은 최대 ' + maxTerrainRectangles + '개까지 넣을 수 있어.');
+    }
+    for (const [index, rectangle] of rectangles.entries()) {
+      const error = terrainBoundsError(rectangle, layout);
+      if (error) throw new Error(label + ' ' + (index + 1) + ' · ' + error);
+      const {left, right, front, back} = rectangle;
+      layout[kind].push({left, right, front, back});
+    }
+  }
+  if (layout.walls.some(wall => layout.pits.some(pit => terrainOverlaps(wall, pit)))) {
+    throw new Error('차단벽과 바닥 구멍이 겹쳐 있어.');
   }
   const groups = [], occupied = [];
   for (const [index, enemy] of stage.enemies.entries()) {
@@ -682,13 +697,13 @@ function readStageDocument(documentData) {
     groups.push({...group, units, team});
     for (const unit of units) occupied.push(unit);
   }
-  return {name, width, depth, enemyZonePercent, pits: layout.pits, groups};
+  return {name, width, depth, enemyZonePercent, pits: layout.pits, walls: layout.walls, groups};
 }
-function pitBoundsError(pit, layout) {
+function terrainBoundsError(pit, layout) {
   if (!pit || ![pit.left, pit.right, pit.front, pit.back].every(Number.isFinite)) return '좌표를 확인해줘.';
-  if (pit.right - pit.left < 1 || pit.back - pit.front < 1) return '구멍의 가로와 세로를 각각 1 이상으로 그려줘.';
+  if (pit.right - pit.left < 1 || pit.back - pit.front < 1) return '가로와 세로를 각각 1 이상으로 그려줘.';
   if (pit.left < -layout.x || pit.right > layout.x || pit.front < -layout.z || pit.back > layout.z) {
-    return '구멍 전체를 맵 안에 넣어줘.';
+    return '맵 안에 그려줘.';
   }
   return '';
 }
@@ -700,8 +715,8 @@ function setStageMode(mode) {
   resetBattle();
   stageEditor.mode = mode;
   stageEditor.notice = null;
-  stageEditor.terrainMode = false;
-  stageEditor.selectedPit = stageEditor.pitPreview = null;
+  stageEditor.terrainMode = null;
+  stageEditor.selectedTerrain = stageEditor.terrainPreview = null;
   stageEditor.loadRequest++;
   ui.app.dataset.mode = mode;
   clearStageSelection();
@@ -722,17 +737,21 @@ function updateStageTools() {
   ui['stage-edit'].textContent = testing ? '편집으로' : '스테이지 편집';
   ui['stage-edit-tools'].hidden = !editing;
   ui['stage-settings'].disabled = Boolean(selected);
-  ui['stage-terrain'].disabled = Boolean(selected);
-  ui['stage-terrain'].setAttribute('aria-pressed', String(stageEditor.terrainMode));
-  ui.app.dataset.terrain = String(stageEditor.terrainMode);
-  ui['pit-delete'].disabled = stageEditor.selectedPit === null;
+  for (const [id, kind] of [['stage-terrain', 'pits'], ['stage-walls', 'walls']]) {
+    ui[id].disabled = Boolean(selected);
+    ui[id].setAttribute('aria-pressed', String(stageEditor.terrainMode === kind));
+  }
+  ui.app.dataset.terrain = String(Boolean(stageEditor.terrainMode));
+  ui['pit-delete'].disabled = stageEditor.selectedTerrain === null;
+  ui['pit-delete'].textContent = stageEditor.terrainMode === 'walls' ? '선택한 차단벽 삭제' : '선택한 구멍 삭제';
   ui['stage-save'].setAttribute('aria-disabled', String(Boolean(selected)));
   ui['stage-test'].disabled = !draft.groups.length || Boolean(selected);
   const caption = ui['stage-caption'];
   caption.hidden = mode === 'sandbox';
   const text = notice?.text ?? (draft.name + ' · ' + draft.width + ' × ' + draft.depth
     + ' · 적 ' + draft.groups.reduce((sum, group) => sum + group.units.length, 0) + '기'
-    + (draft.pits.length ? ' · 구멍 ' + pitRegions(draft.pits).length + '개' : ''));
+    + (draft.pits.length ? ' · 구멍 ' + terrainRegions(draft.pits).length + '개' : '')
+    + (draft.walls.length ? ' · 차단벽 ' + terrainRegions(draft.walls).length + '개' : ''));
   if (caption.textContent !== text) caption.textContent = text;
   caption.dataset.error = Boolean(notice?.error);
 }
@@ -749,23 +768,25 @@ ui['stage-cancel-group'].addEventListener('click', () => {
   clearStageSelection();
   updateDeploy();
 });
-function toggleTerrainMode() {
-  stageEditor.terrainMode = !stageEditor.terrainMode;
-  stageEditor.selectedPit = stageEditor.pitPreview = null;
+function setTerrainMode(kind) {
+  stageEditor.terrainMode = stageEditor.terrainMode === kind ? null : kind;
+  stageEditor.selectedTerrain = stageEditor.terrainPreview = null;
+  stageEditor.notice = null;
   clearStageSelection();
   updatePhase();
 }
-ui['stage-terrain'].addEventListener('click', toggleTerrainMode);
-ui['pit-done'].addEventListener('click', toggleTerrainMode);
+ui['stage-terrain'].addEventListener('click', () => setTerrainMode('pits'));
+ui['stage-walls'].addEventListener('click', () => setTerrainMode('walls'));
+ui['pit-done'].addEventListener('click', () => setTerrainMode(null));
 ui['pit-delete'].addEventListener('click', () => {
-  const region = stageEditor.selectedPit;
-  if (region === null) return;
-  setStagePits(arena.pits.filter(pit => !region.parts.includes(pit)));
+  const {selectedTerrain, terrainMode} = stageEditor;
+  if (selectedTerrain) setStageTerrain(terrainMode, arena[terrainMode].filter(rectangle => !selectedTerrain.parts.includes(rectangle)));
 });
-function setStagePits(pits) {
-  stageEditor.draft.pits = arena.pits = pits;
+function setStageTerrain(kind, rectangles) {
+  stageEditor.draft[kind] = arena[kind] = rectangles;
+  arena.obstacles = [...arena.pits, ...arena.walls];
   terrainRoutes.clear();
-  stageEditor.selectedPit = stageEditor.pitPreview = null;
+  stageEditor.selectedTerrain = stageEditor.terrainPreview = null;
   updateDeploy();
 }
 ui['stage-settings'].addEventListener('click', () => {
@@ -910,7 +931,7 @@ function attackReach(spec, targetRadius) {
 }
 function attackInRange(unit, target, spec, range2) {
   const defender = unitTypes[target.type];
-  if (range2 > attackReach(spec, defender.radius) ** 2) return false;
+  if (range2 > attackReach(spec, defender.radius) ** 2 || !clearWallShot(unit, target, spec)) return false;
   if (isRangedAttack(spec) || !(spec.box || defender.box)) return true;
   return !!rectangleContact(unit, target, spec.attackRange - 2 * circle.radius + 1e-8);
 }
@@ -946,13 +967,13 @@ function enemyByPriorityWithin(unit, living, limit2, priority, attack = null) {
   }
   return {target: best, range2};
 }
-function densestEnemyWithin(unit, living, blastRadius, limit2, counts, minRange2 = 0) {
+function densestEnemyWithin(unit, living, blastRadius, limit2, counts, minRange2 = 0, attack = null) {
   let best = null, range2 = Infinity, bestCount = 0;
   const blast2 = blastRadius ** 2;
   for (const target of living) {
     if (target.team === unit.team) continue;
     const d2 = distance2(unit, target);
-    if (d2 < minRange2 || d2 > limit2) continue;
+    if (d2 < minRange2 || d2 > limit2 || (attack && !clearWallShot(unit, target, attack))) continue;
     let count = counts.get(target);
     if (count === undefined) {
       count = 0;
@@ -1000,11 +1021,54 @@ function pitTravelFraction(from, dx, dz, blocks) {
 function clearPitLine(from, to, blocks) {
   return pitTravelFraction(from, to.x - from.x, to.z - from.z, blocks) === 1;
 }
+// Weapons touch the closed wall, while movement can slide along the open obstacle edge.
+function wallRayInterval(x, z, dx, dz, distance, {left, right, front, back}, padding) {
+  let entry = 0, exit = distance;
+  if (Math.abs(dx) < 1e-10) {
+    if (x < left - padding || x > right + padding) return null;
+  } else {
+    const a = (left - padding - x) / dx, b = (right + padding - x) / dx;
+    entry = Math.max(entry, Math.min(a, b));
+    exit = Math.min(exit, Math.max(a, b));
+  }
+  if (Math.abs(dz) < 1e-10) {
+    if (z < front - padding || z > back + padding) return null;
+  } else {
+    const a = (front - padding - z) / dz, b = (back + padding - z) / dz;
+    entry = Math.max(entry, Math.min(a, b));
+    exit = Math.min(exit, Math.max(a, b));
+  }
+  return entry <= exit ? {entry, exit} : null;
+}
+function wallHitDistance(x, z, dx, dz, distance, padding = 0) {
+  let nearest = Infinity;
+  for (const wall of arena.walls) {
+    const contact = wallRayInterval(x, z, dx, dz, Math.min(distance, nearest), wall, padding);
+    if (contact) nearest = contact.entry;
+  }
+  return nearest;
+}
+function clearWallLine(from, to, padding = 0) {
+  return !arena.walls.length
+    || wallHitDistance(from.x, from.z, to.x - from.x, to.z - from.z, 1, padding) === Infinity;
+}
+function clearWallShot(unit, target, spec) {
+  if (!arena.walls.length) return true;
+  if (spec.beam) {
+    const dx = target.x - unit.x, dz = target.z - unit.z, range = Math.hypot(dx, dz);
+    return range < 1e-8 || beamWallDistance(unit.x, unit.z, dx / range, dz / range, range, spec.beam.width / 2) === Infinity;
+  }
+  if (spec.blastRadius) {
+    const nominalArc = shellHeightCurve(Math.sqrt(distance2(unit, target)), .30);
+    return firstShellWallContact(unit, target, nominalArc) === Infinity;
+  }
+  return clearWallLine(unit, target, spec.projectileSpeed ? projectileRadius : 0);
+}
 function terrainGraph(type) {
   const radius = terrainRadius(type);
   const cached = terrainRoutes.get(radius);
   if (cached) return cached;
-  const blocks = arena.pits.map(pit => ({
+  const blocks = arena.obstacles.map(pit => ({
     left: pit.left - radius, right: pit.right + radius,
     front: pit.front - radius, back: pit.back + radius
   }));
@@ -1014,7 +1078,7 @@ function terrainGraph(type) {
     for (const x of [block.left - .04, block.right + .04]) {
       for (const z of [block.front - .04, block.back + .04]) {
         const point = {x, z};
-        if (Math.abs(x) <= xLimit && Math.abs(z) <= zLimit && !blocks.some(other => insidePit(point, other))) {
+        if (Math.abs(x) <= xLimit && Math.abs(z) <= zLimit && !blocks.some(other => insideTerrain(point, other))) {
           corners.push(point);
         }
       }
@@ -1036,7 +1100,7 @@ function terrainGraph(type) {
 function nearestPitGoal(goal, {blocks, corners, xLimit, zLimit}) {
   const clampPoint = ({x,z}) => ({x: clamp(x, -xLimit, xLimit), z: clamp(z, -zLimit, zLimit)});
   const point = clampPoint(goal);
-  const containing = blocks.filter(block => insidePit(point, block));
+  const containing = blocks.filter(block => insideTerrain(point, block));
   if (!containing.length) return point;
   let best = null, distance = Infinity;
   const candidates = [...corners];
@@ -1046,7 +1110,7 @@ function nearestPitGoal(goal, {blocks, corners, xLimit, zLimit}) {
   }
   for (const candidate of candidates) {
     const range = distance2(candidate, goal);
-    if (range < distance && !blocks.some(block => insidePit(candidate, block))) {
+    if (range < distance && !blocks.some(block => insideTerrain(candidate, block))) {
       best = candidate;
       distance = range;
     }
@@ -1103,7 +1167,7 @@ function pitWaypoint(unit, destination) {
   return route.points[0];
 }
 function moveOnGround(unit, dx, dz) {
-  if (!arena.pits.length) {
+  if (!arena.obstacles.length) {
     unit.x += dx;
     unit.z += dz;
     return;
@@ -1122,7 +1186,7 @@ function moveOnGround(unit, dx, dz) {
   }
 }
 function steer(unit, spec, living, dx, dz, gap) {
-  if (arena.pits.length) {
+  if (arena.obstacles.length) {
     const waypoint = pitWaypoint(unit, {x: unit.x + dx * gap, z: unit.z + dz * gap});
     if (!waypoint) return;
     const x = waypoint.x - unit.x, z = waypoint.z - unit.z;
@@ -1150,7 +1214,7 @@ function steer(unit, spec, living, dx, dz, gap) {
   if (side) {
     const aroundX = dx - dz * side * .82, aroundZ = dz + dx * side * .82;
     const probe = Math.min(spec.moveSpeed * tick, gap) / Math.hypot(aroundX, aroundZ);
-    if (!arena.pits.length || pitTravelFraction(unit, aroundX * probe, aroundZ * probe, terrainGraph(unit.type).blocks) === 1) {
+    if (!arena.obstacles.length || pitTravelFraction(unit, aroundX * probe, aroundZ * probe, terrainGraph(unit.type).blocks) === 1) {
       dx = aroundX;
       dz = aroundZ;
     }
@@ -1169,7 +1233,7 @@ function assignEscortSlots(living) {
   const reserved = [], pending = [];
   const available = (point, clearance, occupants) =>
     Math.abs(point.x) <= arena.x - escort.radius && Math.abs(point.z) <= arena.z - escort.radius
-    && !unitOverPit(point, arena.pits)
+    && !unitOverTerrain(point, arena.obstacles)
     && !reserved.some(slot => slot.team === point.team && distance2(point, slot) < clearance ** 2)
     && !occupants.some(ally => ally.team === point.team && !unitTypes[ally.type].escort && bodiesTooClose(point, ally, .12));
   // Reserve valid existing positions before assigning the vacant ones.
@@ -1271,13 +1335,21 @@ function moveUnits(living) {
     const nearest = closestEnemy(unit, living);
     if (!nearest.target) continue;
     let focus = nearest;
+    let blocked = !clearWallShot(unit, nearest.target, spec);
     if (unit.type === 'diamond') {
       focus = enemyByPriorityWithin(unit, living, (Math.sqrt(nearest.range2) + diamondChaseMargin) ** 2, diamondTargetPriority);
     } else if (spec.burst) {
       const limit2 = (Math.sqrt(nearest.range2) + bomberChaseMargin) ** 2;
       focus = densestEnemyWithin(unit, living, spec.burst.radius, limit2, bomberDensity ??= new Map());
+    } else if (blocked && isRangedAttack(spec)) {
+      const visible = closestEnemy(unit, living, spec);
+      if (visible.target) {
+        focus = visible;
+        blocked = false;
+      }
     }
     const {target, range2} = focus;
+    if (focus !== nearest && (unit.type === 'diamond' || spec.burst)) blocked = !clearWallShot(unit, target, spec);
     if (spec.box && !spec.projectileSpeed) {
       const attackTarget = range2 <= attackReach(spec, maxUnitRadius) ** 2 && !attackInRange(unit, target, spec, range2)
         ? closestEnemy(unit, living, spec).target
@@ -1299,11 +1371,11 @@ function moveUnits(living) {
       : Math.max(spec.approachRange, contact);
     const melee = spec.approachRange === undefined && !isRangedAttack(spec);
     const boxApproach = (spec.box || defender.box) && (melee || spec.approachRange === 0);
-    const retreating = range2 < (spec.retreatRange ?? 0) ** 2 - 1e-8;
+    const retreating = !blocked && range2 < (spec.retreatRange ?? 0) ** 2 - 1e-8;
     const closeEnough = boxApproach
       ? bodiesTooClose(unit, target, melee ? spec.attackRange - 2 * circle.radius : 1e-8)
       : range2 <= approachRange ** 2;
-    if (!retreating && closeEnough) continue;
+    if (!blocked && !retreating && closeEnough) continue;
     const range = Math.sqrt(range2);
     let dx = range > 1e-8 ? (target.x - unit.x) / range : 0;
     let dz = range > 1e-8 ? (target.z - unit.z) / range : Math.cos(teamHeading(unit));
@@ -1326,7 +1398,7 @@ function moveUnits(living) {
       dx /= directionLength;
       dz /= directionLength;
     }
-    const stopRange = boxApproach ? 0 : (spec.approachRange !== undefined || spec.projectileSpeed ? approachRange : contact);
+    const stopRange = blocked || boxApproach ? 0 : (spec.approachRange !== undefined || spec.projectileSpeed ? approachRange : contact);
     const gap = retreating ? spec.retreatRange - range : range - stopRange;
     steer(unit, spec, living, dx, dz, gap);
     if (unit.type === 'diamond') unit.heading = Math.atan2(unit.vx, unit.vz);
@@ -1493,16 +1565,43 @@ function deCasteljau(a, b, c, d, t) {
   const ab = lerp(a, b, t), bc = lerp(b, c, t), cd = lerp(c, d, t);
   return lerp(lerp(ab, bc, t), lerp(bc, cd, t), t);
 }
+function shellHeightCurve(distance, lift) {
+  const control = 1.2 + distance * lift;
+  return t => deCasteljau(shellLaunchHeight, control, control * .9, 0, t);
+}
+function firstShellWallContact(origin, impact, heightAt) {
+  const dx = impact.x - origin.x, dz = impact.z - origin.z;
+  const top = wallHeight + shellHalfHeight;
+  let first = Infinity;
+  for (const wall of arena.walls) {
+    const span = wallRayInterval(origin.x, origin.z, dx, dz, Math.min(first, 1), wall, shellRadius);
+    if (!span) continue;
+    if (heightAt(span.entry) <= top) {
+      first = span.entry;
+      continue;
+    }
+    // This arc has one peak, so two endpoints above the wall guarantee clearance.
+    if (heightAt(span.exit) > top) continue;
+    let clear = span.entry, touching = span.exit;
+    for (let i = 0; i < 18; i++) {
+      const t = (clear + touching) * .5;
+      if (heightAt(t) > top) clear = t;
+      else touching = t;
+    }
+    first = touching;
+  }
+  return first;
+}
 function launchShell(unit, target, spec) {
   const angle = Math.random() * 2 * Math.PI;
   const offset = spec.scatterRadius * Math.sqrt(Math.random());
   const impact = {x: target.x + Math.sin(angle) * offset, z: target.z + Math.cos(angle) * offset};
-  const origin = {x: unit.x, y: .224, z: unit.z};
+  const origin = {x: unit.x, y: shellLaunchHeight, z: unit.z};
   const heading = Math.atan2(impact.x - origin.x, impact.z - origin.z);
   const groundDistance = Math.sqrt(distance2(origin, impact));
-  const controlHeight = 1.2 + groundDistance * lerp(.24, .36, Math.random());
   // The horizontal control points are at 1/3 and 2/3 of the segment, so only height needs cubic interpolation.
-  const heightAt = t => deCasteljau(origin.y, controlHeight, controlHeight * .9, 0, t);
+  const heightAt = shellHeightCurve(groundDistance, lerp(.24, .36, Math.random()));
+  const wallT = firstShellWallContact(origin, impact, heightAt);
   // Use sampled arc length to advance at the specified speed along the curve.
   const lengths = [0];
   const segments = 32;
@@ -1512,11 +1611,15 @@ function launchShell(unit, target, spec) {
     lengths.push(lengths[i - 1] + Math.hypot(groundDistance / segments, y - previousY));
     previousY = y;
   }
+  const arc = {origin, impact, heightAt, lengths, segment: 0, traveled: 0};
+  if (wallT !== Infinity) {
+    const sample = wallT * segments;
+    const i = Math.min(segments - 1, Math.floor(sample));
+    arc.wall = {x: lerp(origin.x, impact.x, wallT), z: lerp(origin.z, impact.z, wallT),
+      y: heightAt(wallT), distance: lerp(lengths[i], lengths[i + 1], sample - i)};
+  }
   unit.heading = heading;
-  state.projectiles.push({
-    ...origin, team: unit.team, heading, attack: spec,
-    arc: {origin, impact, heightAt, lengths, segment: 0, traveled: 0}
-  });
+  state.projectiles.push({...origin, team: unit.team, heading, attack: spec, arc});
 }
 function shellParameter(lengths, distance, segment) {
   const begin = lengths[segment], end = lengths[segment + 1];
@@ -1526,6 +1629,10 @@ function advanceShell(projectile, living, damage) {
   const {arc, attack, team} = projectile;
   const {origin, impact, heightAt, lengths} = arc;
   arc.traveled += attack.projectileSpeed * tick;
+  if (arc.wall && arc.traveled >= arc.wall.distance) {
+    addWallStrike(arc.wall.x, arc.wall.y, arc.wall.z, team);
+    return false;
+  }
   if (arc.traveled >= lengths.at(-1)) {
     state.impacts.push({...impact, team, radius: attack.blastRadius, remaining: impactDuration});
     if (attack.field) {
@@ -1581,6 +1688,9 @@ function launchDart(unit, heading, attack, range, lock = null) {
   if (lock) projectile.lock = lock;
   state.projectiles.push(projectile);
 }
+function addWallStrike(x, y, z, team, trace = null) {
+  state.impacts.push({x, y, z, team, trace, remaining: impactDuration});
+}
 function advanceProjectiles(living, damage) {
   if (!state.projectiles.length) return;
   state.projectiles = state.projectiles.filter(projectile => {
@@ -1593,13 +1703,19 @@ function advanceProjectiles(living, damage) {
       projectile.dz = Math.cos(projectile.heading);
     }
     const distance = Math.min(projectile.remaining, projectile.attack.projectileSpeed * tick);
-    for (let hit; (hit = firstProjectileHit(projectile, distance, living));) {
+    const wallDistance = wallHitDistance(projectile.x, projectile.z, projectile.dx, projectile.dz, distance, projectileRadius);
+    const hitLimit = wallDistance === Infinity ? distance : wallDistance - 1e-8;
+    for (let hit; hitLimit >= 0 && (hit = firstProjectileHit(projectile, hitLimit, living));) {
       const priorHits = projectile.hit?.size;
       const damageScale = priorHits ? (projectile.attack.pierceDamageRetention ?? 1) ** priorHits : 1;
       damage[hit.target.id] += damageAgainst(projectile.attack, hit.target) * damageScale;
       if (!projectile.hit) return false;
       projectile.hit.add(hit.target.id);
       if (projectile.hit.size >= projectile.attack.projectileHits) return false;
+    }
+    if (wallDistance !== Infinity) {
+      addWallStrike(projectile.x + projectile.dx * wallDistance, .36, projectile.z + projectile.dz * wallDistance, projectile.team);
+      return false;
     }
     projectile.x += projectile.dx * distance;
     projectile.z += projectile.dz * distance;
@@ -1611,30 +1727,59 @@ function advanceProjectiles(living, damage) {
 function fireHitscan(unit, aim, spec, living, damage) {
   const heading = Math.atan2(aim.x - unit.x, aim.z - unit.z);
   const ray = {x: unit.x, z: unit.z, team: unit.team, dx: Math.sin(heading), dz: Math.cos(heading)};
-  const hit = firstProjectileHit(ray, spec.attackRange, living, 0);
-  if (!hit) return;
+  const wallDistance = wallHitDistance(ray.x, ray.z, ray.dx, ray.dz, spec.attackRange);
+  const limit = wallDistance === Infinity ? spec.attackRange : wallDistance - 1e-8;
+  const hit = limit >= 0 && firstProjectileHit(ray, limit, living, 0);
+  if (!hit && wallDistance === Infinity) return;
   unit.heading = heading;
   unit.aimX = -ray.dx;
   unit.aimZ = -ray.dz;
   unit.swing = .16;
+  const distance = hit ? hit.distance : wallDistance;
+  const muzzle = Math.min(spec.radius * .84, distance);
+  const trace = {x: ray.x + ray.dx * muzzle, z: ray.z + ray.dz * muzzle};
+  const impact = {x: ray.x + ray.dx * distance, z: ray.z + ray.dz * distance};
+  if (!hit) {
+    addWallStrike(impact.x, .36, impact.z, unit.team, trace);
+    return;
+  }
   damage[hit.target.id] += damageAgainst(spec, hit.target);
-  const impact = {x: ray.x + ray.dx * hit.distance, z: ray.z + ray.dz * hit.distance};
   const radius = spec.splashRadius;
   const radius2 = radius ** 2;
   const splash = {damage: spec.splashDamage, penetration: 0};
   for (const target of living) {
-    if (target.team !== unit.team && target !== hit.target && distance2(target, impact) <= radius2) {
+    if (target.team !== unit.team && target !== hit.target && distance2(target, impact) <= radius2 && clearWallLine(impact, target)) {
       damage[target.id] += damageAgainst(splash, target);
     }
   }
-  const muzzle = Math.min(spec.radius * .84, hit.distance);
-  state.impacts.push({...impact, team: unit.team, radius, remaining: impactDuration,
-    trace: {x: ray.x + ray.dx * muzzle, z: ray.z + ray.dz * muzzle}});
+  state.impacts.push({...impact, team: unit.team, radius, remaining: impactDuration, trace});
+}
+function beamWallDistance(x, z, dx, dz, range, halfWidth) {
+  if (!arena.walls.length) return Infinity;
+  const sx = dz * halfWidth, sz = -dx * halfWidth;
+  // First contact is on the muzzle segment, one of the beam edges, or a wall corner within the beam.
+  if (wallHitDistance(x - sx, z - sz, 2 * sx, 2 * sz, 1) !== Infinity) return 0;
+  let nearest = Math.min(
+    wallHitDistance(x - sx, z - sz, dx, dz, range),
+    wallHitDistance(x + sx, z + sz, dx, dz, range)
+  );
+  for (const {left, right, front, back} of arena.walls) {
+    for (const wx of [left - x, right - x]) {
+      for (const wz of [front - z, back - z]) {
+        if (Math.abs(wx * dz - wz * dx) > halfWidth) continue;
+        const along = wx * dx + wz * dz;
+        if (along >= 0 && along <= range) nearest = Math.min(nearest, along);
+      }
+    }
+  }
+  return nearest;
 }
 function beamLane(unit, spec) {
   const heading = facingOf(unit);
-  return {x: unit.x, z: unit.z, team: unit.team, dx: Math.sin(heading), dz: Math.cos(heading),
-    range: spec.attackRange, halfWidth: spec.beam.width / 2};
+  const dx = Math.sin(heading), dz = Math.cos(heading), halfWidth = spec.beam.width / 2;
+  const wall = beamWallDistance(unit.x, unit.z, dx, dz, spec.attackRange, halfWidth);
+  return {x: unit.x, z: unit.z, team: unit.team, dx, dz, range: Math.min(wall, spec.attackRange),
+    halfWidth, blocked: wall !== Infinity};
 }
 function applyBeamDamage(unit, spec, living, damage, opening) {
   const lane = beamLane(unit, spec);
@@ -1644,7 +1789,8 @@ function applyBeamDamage(unit, spec, living, damage, opening) {
     const x = target.x - lane.x, z = target.z - lane.z;
     const along = x * lane.dx + z * lane.dz;
     const side = Math.abs(x * lane.dz - z * lane.dx);
-    if (along < -1e-8 || along > lane.range + 1e-8 || side > lane.halfWidth + 1e-8) continue;
+    if (along < -1e-8 || along > lane.range + 1e-8 || (lane.blocked && along >= lane.range - 1e-8)
+        || side > lane.halfWidth + 1e-8) continue;
     if (opening) attack.damage = lerp(spec.damage, spec.beam.edgeDamage, Math.min(1, side / lane.halfWidth));
     damage[target.id] += damageAgainst(attack, target);
   }
@@ -1700,7 +1846,7 @@ function sweepAttack(unit, spec, living, damage) {
     if (target.team === unit.team) continue;
     const dx = target.x - unit.x, dz = target.z - unit.z;
     const d2 = dx * dx + dz * dz;
-    if (d2 > range2) continue;
+    if (d2 > range2 || !clearWallLine(unit, target)) continue;
     const forward = dx * unit.aimX + dz * unit.aimZ;
     if (forward >= Math.sqrt(d2) * cosHalfAngle - 1e-8) hits.push({target, d2});
   }
@@ -1747,6 +1893,11 @@ function advanceWaves(living, damage) {
       if (unit.team === wave.team || wave.hit.has(unit.id)) continue;
       const radius = waveContactRadius(wave, unit, nextRadius, motion);
       if (radius === null) continue;
+      if (arena.walls.length) {
+        const t = (radius - wave.radius) / step;
+        const contact = {x: lerp(unit.previousX, unit.x, t), z: lerp(unit.previousZ, unit.z, t)};
+        if (!clearWallLine(wave, contact)) continue;
+      }
       wave.hit.add(unit.id);
       damage[unit.id] += damageAgainst({
         damage: lerp(spec.damage, spec.edgeDamage, radius / spec.attackRange), penetration: spec.penetration
@@ -1759,7 +1910,7 @@ function advanceWaves(living, damage) {
 function simulate() {
   state.elapsed += tick;
   const living = state.units.filter(unit => unit.hp > 0);
-  const beforeMove = arena.pits.length ? living.map(({x,z}) => ({x,z})) : null;
+  const beforeMove = arena.obstacles.length ? living.map(({x,z}) => ({x,z})) : null;
   if (state.waves.length) {
     for (const unit of living) { unit.previousX = unit.x; unit.previousZ = unit.z; }
   }
@@ -1798,7 +1949,7 @@ function simulate() {
     let aim;
     if (spec.blastRadius) {
       aim = densestEnemyWithin(unit, living, spec.blastRadius, spec.attackRange ** 2,
-        densityCounts ??= new Map(), spec.minAttackRange ** 2);
+        densityCounts ??= new Map(), spec.minAttackRange ** 2, spec);
     }
     else if (spec.hitscan) aim = enemyByPriorityWithin(unit, living, Infinity, target => target.hp, spec);
     else if (unit.type === 'diamond') aim = enemyByPriorityWithin(unit, living, Infinity, diamondTargetPriority, spec);
@@ -1991,32 +2142,42 @@ function previewSide(screen, ground) {
     || contains(area, groundPoint(screen.x, screen.y + bodyHeightOnScreen));
   return hits(bounds) ? 1 : mirrorBounds && hits(mirrorBounds) ? -1 : 0;
 }
-function previewPit(from, to) {
+function previewTerrain(from, to) {
+  const kind = stageEditor.terrainMode;
+  const label = kind === 'walls' ? '차단벽' : '구멍';
+  const otherKind = kind === 'walls' ? 'pits' : 'walls';
   const snap = (value, extent) => clamp(Math.round(value * 2) / 2, -extent, extent);
   const x0 = snap(from.x, arena.x), x1 = snap(to.x, arena.x);
   const z0 = snap(from.z, arena.z), z1 = snap(to.z, arena.z);
-  const pit = {left: Math.min(x0,x1), right: Math.max(x0,x1), front: Math.min(z0,z1), back: Math.max(z0,z1)};
-  const boundsError = pitBoundsError(pit, arena);
-  const pits = boundsError ? arena.pits : addPitRectangle(arena.pits, pit);
+  const rectangle = {left: Math.min(x0,x1), right: Math.max(x0,x1), front: Math.min(z0,z1), back: Math.max(z0,z1)};
+  const boundsError = terrainBoundsError(rectangle, arena);
+  const rectangles = boundsError ? arena[kind] : addTerrainRectangle(arena[kind], rectangle);
   const error = boundsError
-    || (pits.length > maxPits ? '구멍을 구성하는 사각형은 최대 ' + maxPits + '개까지 넣을 수 있어.' : '')
-    || (deploy.units.some(unit => unitOverPit(unit, [pit])) ? '배치한 적과 구멍이 겹쳐. 다른 곳에 그려줘.' : '');
-  stageEditor.pitPreview = {pit, pits, error};
-  const joins = arena.pits.some(other => pitsOverlap(pit, other));
-  ui.hint.textContent = error || (joins ? '놓으면 겹친 구멍과 합치기' : '놓으면 바닥 구멍 추가');
+    || (rectangles.length > maxTerrainRectangles ? label + '을 구성하는 사각형은 최대 ' + maxTerrainRectangles + '개까지 넣을 수 있어.' : '')
+    || (arena[otherKind].some(other => terrainOverlaps(rectangle, other)) ? '차단벽과 바닥 구멍이 겹쳐. 다른 곳에 그려줘.' : '')
+    || (deploy.units.some(unit => unitOverTerrain(unit, [rectangle])) ? '배치한 적과 ' + label + '이 겹쳐. 다른 곳에 그려줘.' : '');
+  stageEditor.terrainPreview = {rectangle, rectangles, error};
+  const joins = arena[kind].some(other => terrainOverlaps(rectangle, other));
+  ui.hint.textContent = error || (joins ? '놓으면 겹친 ' + label + '과 합치기' : '놓으면 ' + label + ' 추가');
   ui.hint.dataset.error = Boolean(error);
   needsPaint = true;
 }
-function finishPit(ground, point) {
+function finishTerrain(event, point) {
+  const screen = viewportPoint(event.clientX, event.clientY);
+  const ground = groundPoint(screen.x, screen.y);
+  const kind = stageEditor.terrainMode;
   if (point.dragged) {
-    previewPit(point.ground, ground);
-    const {pits, error} = stageEditor.pitPreview;
-    stageEditor.pitPreview = null;
-    if (!error) setStagePits(pits);
+    previewTerrain(point.ground, ground);
+    const {rectangles, error} = stageEditor.terrainPreview;
+    stageEditor.terrainPreview = null;
+    if (!error) setStageTerrain(kind, rectangles);
     else needsPaint = true;
   } else {
-    stageEditor.selectedPit = pitRegions(arena.pits).findLast(region =>
-      region.parts.some(pit => insidePit(ground, pit))) ?? null;
+    const regions = terrainRegions(arena[kind]);
+    const regionAt = position => regions.findLast(region => region.parts.some(rectangle =>
+      insideTerrain(position, rectangle, .08)));
+    const top = kind === 'walls' && groundPoint(screen.x, screen.y + wallHeight * camera.cos * camera.scale);
+    stageEditor.selectedTerrain = (top && regionAt(top)) || regionAt(ground) || null;
     updateDeploy();
   }
 }
@@ -2037,8 +2198,8 @@ ui.arena.addEventListener('pointerdown', event => {
   pointers.set(event.pointerId, point);
   if (pointers.size === 2) {
     multiTouch = true;
-    if (stageEditor.pitPreview) {
-      stageEditor.pitPreview = null;
+    if (stageEditor.terrainPreview) {
+      stageEditor.terrainPreview = null;
       updateDeploy();
     }
     if (first.grabbed && first.dragged) {
@@ -2070,8 +2231,8 @@ ui.arena.addEventListener('pointermove', event => {
     const dx = x - (point.dragged ? point.x : point.startX);
     const dy = y - (point.dragged ? point.y : point.startY);
     point.dragged = true;
-    if (point.terrain && stageEditor.terrainMode) {
-      previewPit(point.ground, eventGround(event));
+    if (point.terrain && point.terrain === stageEditor.terrainMode) {
+      previewTerrain(point.ground, eventGround(event));
     } else if (point.grabbed && state.phase === 'deploy') {
       const ground = eventGround(event);
       setAnchor(point.grabbed.x + point.side * (ground.x - point.ground.x), point.grabbed.z + ground.z - point.ground.z);
@@ -2085,16 +2246,16 @@ for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
   ui.arena.addEventListener(type, event => {
     const point = pointers.get(event.pointerId);
     if (!point) return;
-    if (type === 'pointerup' && !multiTouch && point.terrain && stageEditor.terrainMode) {
-      finishPit(eventGround(event), point);
+    if (type === 'pointerup' && !multiTouch && point.terrain && point.terrain === stageEditor.terrainMode) {
+      finishTerrain(event, point);
     } else if (type === 'pointerup' && !multiTouch && point.canPlace && !point.terrain && !point.dragged
         && state.phase === 'deploy' && !stageEditor.terrainMode) {
       const screen = viewportPoint(event.clientX, event.clientY);
       const ground = groundPoint(screen.x, screen.y);
       if (onMap(ground)) selectOrSetAnchor(ground, screen);
     }
-    if (type !== 'pointerup' && stageEditor.pitPreview) {
-      stageEditor.pitPreview = null;
+    if (type !== 'pointerup' && stageEditor.terrainPreview) {
+      stageEditor.terrainPreview = null;
       updateDeploy();
     }
     pointers.delete(event.pointerId);
@@ -2427,6 +2588,12 @@ function createRenderer(scene) {
     for (const x of [-halfWidth, halfWidth]) slab(x,.02,0,.18,depth,[.41,.56,.53]);
     for (const z of [-halfDepth, halfDepth]) slab(0,.02,z,width,.18,z > 0 ? [.37,.65,.58] : [.55,.37,.35]);
   }
+  function drawWall({left, right, front, back}) {
+    const x = (left + right) / 2, z = (front + back) / 2;
+    const width = right - left, depth = back - front;
+    draw('square', x, .02, z, width / Math.SQRT2, wallHeight - .10, depth / Math.SQRT2, [.33,.37,.44], 1);
+    draw('square', x, wallHeight - .08, z, width / Math.SQRT2, .08, depth / Math.SQRT2, [.56,.60,.67], 1);
+  }
   const teams = [
     {body:[.25,.66,.57], rim:[.58,1,.87], cap:[.17,.46,.41], ghost:[.44,.92,.79]},
     {body:[.76,.35,.28], rim:[1,.67,.55], cap:[.58,.24,.20], ghost:[1,.43,.34]}
@@ -2471,11 +2638,12 @@ function createRenderer(scene) {
       updateFloor();
       for (const floor of slabs) draw('plane',floor.x,floor.y,floor.z,floor.width,1,floor.depth,floor.color);
       const byDepth = (a, b) => (a.x - b.x) * camera.sinYaw + (a.z - b.z) * camera.cosYaw;
+      for (const wall of arena.walls) drawWall(wall);
       for (const model of [...units].sort(byDepth)) unit(model);
       for (const shot of projectiles) {
         if (shot.arc) {
           draw('disk',shot.x,.035,shot.z,shellRadius,0,shellRadius,[.04,.08,.09,.55]);
-          draw('hexagon',shot.x,shot.y-.10,shot.z,shellRadius,.20,shellRadius,teams[shot.team].rim,0,shot.heading);
+          draw('hexagon',shot.x,shot.y-shellHalfHeight,shot.z,shellRadius,2*shellHalfHeight,shellRadius,teams[shot.team].rim,0,shot.heading);
         } else {
           draw('triangle',shot.x,.28,shot.z,projectileRadius,.12,projectileRadius,teams[shot.team].rim,0,shot.heading);
         }
@@ -2643,6 +2811,25 @@ function drawHitscanEffect(ctx, impact) {
   ctx.stroke();
   ctx.globalAlpha = 1;
 }
+function drawWallStrike(ctx, impact) {
+  const age = impactDuration - impact.remaining;
+  const life = 1 - age / .21;
+  if (life <= 0) return;
+  const point = project(impact.x, impact.y, impact.z);
+  const reach = clamp(camera.scale * .8, 3, 10);
+  ctx.strokeStyle = '#ffe3aa';
+  ctx.globalAlpha = life;
+  ctx.lineWidth = 1.35;
+  ctx.beginPath();
+  for (let i = 0; i < 5; i++) {
+    const angle = (impact.x + impact.z) * .62 + i * Math.PI * 2 / 5;
+    const dx = Math.cos(angle) * reach, dy = Math.sin(angle) * reach;
+    ctx.moveTo(point.x + dx * (1 - life), point.y + dy * (1 - life));
+    ctx.lineTo(point.x + dx * (1.4 - life), point.y + dy * (1.4 - life));
+  }
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
 function drawBeam(ctx, lane, energy, charging = false) {
   const {x, z, dx, dz, range, halfWidth, team} = lane;
   const y = charging ? .04 : .38;
@@ -2679,6 +2866,33 @@ function drawBeam(ctx, lane, energy, charging = false) {
   }
   ctx.globalAlpha = 1;
 }
+function traceWaveFront(ctx, wave, worldRadius) {
+  const point = project(wave.x, .05, wave.z);
+  const screenRadius = worldRadius * camera.scale;
+  ctx.beginPath();
+  if (!arena.walls.length) {
+    ctx.ellipse(point.x, point.y, screenRadius, screenRadius * camera.sin, 0, Math.PI * 2);
+    return;
+  }
+  if (!wave.front) {
+    wave.front = Array.from({length: 96}, (_, i) => {
+      const angle = i * Math.PI * 2 / 96, dx = Math.cos(angle), dz = Math.sin(angle);
+      return {dx, dz, wall: wallHitDistance(wave.x, wave.z, dx, dz, wave.attack.attackRange)};
+    });
+  }
+  let connected = false;
+  for (let i = 0; i <= wave.front.length; i++) {
+    const {dx, dz, wall} = wave.front[i % wave.front.length];
+    if (worldRadius >= wall) {
+      connected = false;
+      continue;
+    }
+    const vertex = project(wave.x + dx * worldRadius, .05, wave.z + dz * worldRadius);
+    if (connected) ctx.lineTo(vertex.x, vertex.y);
+    else ctx.moveTo(vertex.x, vertex.y);
+    connected = true;
+  }
+}
 function drawPulseWave(ctx, wave) {
   if (!wave.radius) return;
   const point = project(wave.x, .05, wave.z);
@@ -2686,8 +2900,7 @@ function drawPulseWave(ctx, wave) {
   const depth = radius * camera.sin;
   if (point.x < -radius - 4 || point.x > camera.w + radius + 4 || point.y < -depth - 4 || point.y > camera.h + depth + 4) return;
   const life = 1 - .72 * (wave.radius / wave.attack.attackRange) ** 2;
-  ctx.beginPath();
-  ctx.ellipse(point.x, point.y, radius, depth, 0, 0, Math.PI * 2);
+  traceWaveFront(ctx, wave, wave.radius);
   ctx.strokeStyle = wave.team === 0 ? '#74f8d2' : '#ff986d';
   ctx.globalAlpha = life * .22;
   ctx.lineWidth = 6;
@@ -2698,8 +2911,7 @@ function drawPulseWave(ctx, wave) {
   ctx.stroke();
   const echo = radius - .7 * camera.scale;
   if (echo > 1) {
-    ctx.beginPath();
-    ctx.ellipse(point.x, point.y, echo, echo * camera.sin, 0, 0, Math.PI * 2);
+    traceWaveFront(ctx, wave, wave.radius - .7);
     ctx.globalAlpha = life * .28;
     ctx.lineWidth = 1;
     ctx.stroke();
@@ -2749,25 +2961,27 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
   ctx.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
   ctx.clearRect(0, 0, camera.w, camera.h);
   ctx.textAlign = 'center';
-  for (const region of pitRegions(arena.pits)) {
-    const selected = stageEditor.selectedPit === region;
-    ctx.strokeStyle = selected ? '#f6d393' : '#638487';
-    ctx.lineWidth = selected ? 2 : 1;
-    ctx.beginPath();
-    for (const [x0,z0,x1,z1] of region.edges) {
-      const start = project(x0, .03, z0), end = project(x1, .03, z1);
-      ctx.moveTo(start.x, start.y);
-      ctx.lineTo(end.x, end.y);
+  for (const [rectangles, y, color] of [[arena.pits, .03, '#638487'], [arena.walls, wallHeight, '#a7aebd']]) {
+    for (const region of terrainRegions(rectangles)) {
+      const selected = stageEditor.selectedTerrain === region;
+      ctx.strokeStyle = selected ? '#f6d393' : color;
+      ctx.lineWidth = selected ? 2 : 1;
+      ctx.beginPath();
+      for (const [x0,z0,x1,z1] of region.edges) {
+        const start = project(x0, y, z0), end = project(x1, y, z1);
+        ctx.moveTo(start.x, start.y);
+        ctx.lineTo(end.x, end.y);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
   }
-  if (stageEditor.pitPreview) {
-    const {pit, error} = stageEditor.pitPreview;
+  if (stageEditor.terrainPreview) {
+    const {rectangle, error} = stageEditor.terrainPreview;
     ctx.strokeStyle = error ? '#ffab97' : '#f6d393';
     ctx.fillStyle = error ? '#ffab9730' : '#f6d39330';
     ctx.lineWidth = 1.5;
     ctx.setLineDash([4,4]);
-    groundRectangle(ctx, pit.left, pit.front, pit.right, pit.back, .04);
+    groundRectangle(ctx, rectangle.left, rectangle.front, rectangle.right, rectangle.back, .04);
     ctx.fill();
     ctx.stroke();
     ctx.setLineDash([]);
@@ -2775,7 +2989,8 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
   for (const field of state.fields) drawDamageField(ctx, field);
   for (const wave of state.waves) drawPulseWave(ctx, wave);
   for (const impact of state.impacts) {
-    drawShellImpact(ctx, impact);
+    if (impact.radius) drawShellImpact(ctx, impact);
+    else if (!impact.trace) drawWallStrike(ctx, impact);
     if (impact.trace) drawHitscanEffect(ctx, impact);
   }
   for (const unit of units) {
