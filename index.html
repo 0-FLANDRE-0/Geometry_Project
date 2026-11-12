@@ -263,7 +263,7 @@ button:disabled { opacity: .37; cursor: default; }
     </form>
   </dialog>
 </div>
-<script src="./vendor/three-r187.min.js?v=2"></script>
+<script src="./vendor/three-r187.min.js?v=3"></script>
 <script>
 'use strict';
 const byId = id => document.getElementById(id);
@@ -962,15 +962,57 @@ function attackInRange(unit, target, spec, range2) {
   if (isRangedAttack(spec) || !(spec.box || defender.box)) return true;
   return !!rectangleContact(unit, target, spec.attackRange - 2 * circle.radius + 1e-8);
 }
-function closestEnemy(unit, living, attack = null) {
+function buildUnitSearch(living) {
+  const teams = [[], []];
+  for (const unit of living) {
+    const blocks = teams[unit.team];
+    let block = blocks.at(-1);
+    // Keep original unit order within each team so distance ties resolve as before.
+    if (!block || block.units.length === 8) {
+      block = {units: [], left: 0, right: 0, front: 0, back: 0};
+      blocks.push(block);
+    }
+    block.units.push(unit);
+  }
+  refreshUnitSearch(teams);
+  return teams;
+}
+function refreshUnitSearch(teams) {
+  const {min, max} = Math;
+  for (const blocks of teams) {
+    for (const block of blocks) {
+      let left = Infinity, right = -Infinity, front = Infinity, back = -Infinity;
+      for (const unit of block.units) {
+        left = min(left, unit.x);
+        right = max(right, unit.x);
+        front = min(front, unit.z);
+        back = max(back, unit.z);
+      }
+      block.left = left;
+      block.right = right;
+      block.front = front;
+      block.back = back;
+    }
+  }
+}
+function blockDistance2(point, block) {
+  const x = point.x, z = point.z;
+  const dx = x < block.left ? block.left - x : x > block.right ? x - block.right : 0;
+  const dz = z < block.front ? block.front - z : z > block.back ? z - block.back : 0;
+  return dx * dx + dz * dz;
+}
+function closestEnemy(unit, living, attack = null, search = buildUnitSearch(living)) {
   let best = null, range2 = Infinity;
   const limit2 = attack ? attackReach(attack, maxUnitRadius) ** 2 : Infinity;
-  for (const target of living) {
-    if (target.team === unit.team) continue;
-    const d2 = distance2(unit, target);
-    if (d2 <= limit2 && d2 < range2 - 1e-8 && (!attack || attackInRange(unit, target, attack, d2))) {
-      best = target;
-      range2 = d2;
+  for (const block of search[1 - unit.team]) {
+    const nearest2 = blockDistance2(unit, block);
+    if (nearest2 > limit2 || nearest2 > range2) continue;
+    for (const target of block.units) {
+      const d2 = distance2(unit, target);
+      if (d2 <= limit2 && d2 < range2 - 1e-8 && (!attack || attackInRange(unit, target, attack, d2))) {
+        best = target;
+        range2 = d2;
+      }
     }
   }
   return {target: best, range2};
@@ -978,41 +1020,47 @@ function closestEnemy(unit, living, attack = null) {
 function diamondTargetPriority(spec) {
   return spec.large && spec.defense <= diamondLargeMaxDefense ? 1 - spec.defense : -spec.hp;
 }
-function enemyByPriorityWithin(unit, living, limit2, priority, attack = null) {
+function enemyByPriorityWithin(unit, living, limit2, priority, attack = null, search = buildUnitSearch(living)) {
   let best = null, range2 = Infinity, bestScore = -Infinity;
   if (attack) limit2 = Math.min(limit2, attackReach(attack, maxUnitRadius) ** 2);
-  for (const target of living) {
-    if (target.team === unit.team) continue;
-    const d2 = distance2(unit, target);
-    if (d2 > limit2 || (attack && !attackInRange(unit, target, attack, d2))) continue;
-    const score = priority(unitTypes[target.type]);
-    if (score > bestScore || (score === bestScore && d2 < range2 - 1e-8)) {
-      best = target;
-      range2 = d2;
-      bestScore = score;
+  for (const block of search[1 - unit.team]) {
+    if (blockDistance2(unit, block) > limit2) continue;
+    for (const target of block.units) {
+      const d2 = distance2(unit, target);
+      if (d2 > limit2 || (attack && !attackInRange(unit, target, attack, d2))) continue;
+      const score = priority(unitTypes[target.type]);
+      if (score > bestScore || (score === bestScore && d2 < range2 - 1e-8)) {
+        best = target;
+        range2 = d2;
+        bestScore = score;
+      }
     }
   }
   return {target: best, range2};
 }
-function densestEnemyWithin(unit, living, blastRadius, limit2, counts, minRange2 = 0, attack = null) {
+function densestEnemyWithin(unit, living, blastRadius, limit2, counts, minRange2 = 0, attack = null, search = buildUnitSearch(living)) {
   let best = null, range2 = Infinity, bestCount = 0;
   const blast2 = blastRadius ** 2;
-  for (const target of living) {
-    if (target.team === unit.team) continue;
-    const d2 = distance2(unit, target);
-    if (d2 < minRange2 || d2 > limit2 || (attack && !clearWallShot(unit, target, attack))) continue;
-    let count = counts.get(target);
-    if (count === undefined) {
-      count = 0;
-      for (const neighbor of living) {
-        if (neighbor.team === target.team && distance2(neighbor, target) <= blast2) count++;
+  const enemies = search[1 - unit.team];
+  for (const block of enemies) {
+    if (blockDistance2(unit, block) > limit2) continue;
+    for (const target of block.units) {
+      const d2 = distance2(unit, target);
+      if (d2 < minRange2 || d2 > limit2 || (attack && !clearWallShot(unit, target, attack))) continue;
+      let count = counts.get(target);
+      if (count === undefined) {
+        count = 0;
+        for (const nearby of enemies) {
+          if (blockDistance2(target, nearby) > blast2) continue;
+          for (const neighbor of nearby.units) if (distance2(neighbor, target) <= blast2) count++;
+        }
+        counts.set(target, count);
       }
-      counts.set(target, count);
-    }
-    if (count > bestCount || (count === bestCount && d2 < range2 - 1e-8)) {
-      best = target;
-      range2 = d2;
-      bestCount = count;
+      if (count > bestCount || (count === bestCount && d2 < range2 - 1e-8)) {
+        best = target;
+        range2 = d2;
+        bestCount = count;
+      }
     }
   }
   return {target: best, range2};
@@ -1212,7 +1260,7 @@ function moveOnGround(unit, dx, dz) {
     unit.z += dz * pitTravelFraction(unit, 0, dz, blocks);
   }
 }
-function steer(unit, spec, living, dx, dz, gap) {
+function steer(unit, spec, living, dx, dz, gap, search = buildUnitSearch(living)) {
   if (arena.obstacles.length) {
     const waypoint = pitWaypoint(unit, {x: unit.x + dx * gap, z: unit.z + dz * gap});
     if (!waypoint) return;
@@ -1225,17 +1273,20 @@ function steer(unit, spec, living, dx, dz, gap) {
   let forward = Infinity, side = 0;
   const maxSeparation = spec.radius + maxUnitRadius;
   const search2 = (maxSeparation + .42) ** 2 + (maxSeparation * .88) ** 2 + 1e-8;
-  for (const other of living) {
-    if (other.team !== unit.team || unit === other) continue;
-    const rx = other.x - unit.x, rz = other.z - unit.z;
-    if (rx * rx + rz * rz > search2) continue;
-    const along = rx * dx + rz * dz;
-    const lateral = -rx * dz + rz * dx;
-    const separation = spec.radius + unitTypes[other.type].radius;
-    if (along > .035 && along < Math.min(forward, separation + .42) && Math.abs(lateral) < separation * .88) {
-      forward = along;
-      const sharedTurn = spec.escort && unitTypes[other.type].escort;
-      side = Math.abs(lateral) > .018 ? -Math.sign(lateral) : (sharedTurn || unit.id % 2 ? 1 : -1);
+  for (const block of search[unit.team]) {
+    if (blockDistance2(unit, block) > search2) continue;
+    for (const other of block.units) {
+      if (unit === other) continue;
+      const rx = other.x - unit.x, rz = other.z - unit.z;
+      if (rx * rx + rz * rz > search2) continue;
+      const along = rx * dx + rz * dz;
+      const lateral = -rx * dz + rz * dx;
+      const separation = spec.radius + unitTypes[other.type].radius;
+      if (along > .035 && along < Math.min(forward, separation + .42) && Math.abs(lateral) < separation * .88) {
+        forward = along;
+        const sharedTurn = spec.escort && unitTypes[other.type].escort;
+        side = Math.abs(lateral) > .018 ? -Math.sign(lateral) : (sharedTurn || unit.id % 2 ? 1 : -1);
+      }
     }
   }
   if (side) {
@@ -1323,7 +1374,7 @@ function escortThreatNear(ally, slot, living) {
   }
   return threat;
 }
-function moveEscort(unit, spec, living, rooted) {
+function moveEscort(unit, spec, living, rooted, search) {
   const ally = unit.protectedAlly;
   if (!ally) return false;
   const slot = unit.escortSlot && escortSlotPoint(ally, unit.escortSlot);
@@ -1346,11 +1397,12 @@ function moveEscort(unit, spec, living, rooted) {
   const tolerance = threat ? 1e-8 : .22;
   if (!threat && unit.escortSettled && distance <= .42) return true;
   unit.escortSettled = !threat && distance <= tolerance + 1e-8;
-  if (distance > tolerance && !unit.escortSettled) steer(unit, spec, living, dx / distance, dz / distance, distance - tolerance);
+  if (distance > tolerance && !unit.escortSettled) steer(unit, spec, living, dx / distance, dz / distance, distance - tolerance, search);
   return true;
 }
 function moveUnits(living) {
   assignEscortSlots(living);
+  const search = buildUnitSearch(living);
   let bomberDensity;
   for (const unit of living) {
     unit.vx = unit.vz = 0;
@@ -1358,18 +1410,18 @@ function moveUnits(living) {
     const spec = unitTypes[unit.type];
     const rooted = unit.rootedUntil > state.elapsed + 1e-8;
     if (rooted && !spec.box) continue;
-    if (spec.escort && moveEscort(unit, spec, living, rooted)) continue;
-    const nearest = closestEnemy(unit, living);
+    if (spec.escort && moveEscort(unit, spec, living, rooted, search)) continue;
+    const nearest = closestEnemy(unit, living, null, search);
     if (!nearest.target) continue;
     let focus = nearest;
     let blocked = !clearWallShot(unit, nearest.target, spec);
     if (unit.type === 'diamond') {
-      focus = enemyByPriorityWithin(unit, living, (Math.sqrt(nearest.range2) + diamondChaseMargin) ** 2, diamondTargetPriority);
+      focus = enemyByPriorityWithin(unit, living, (Math.sqrt(nearest.range2) + diamondChaseMargin) ** 2, diamondTargetPriority, null, search);
     } else if (spec.burst) {
       const limit2 = (Math.sqrt(nearest.range2) + bomberChaseMargin) ** 2;
-      focus = densestEnemyWithin(unit, living, spec.burst.radius, limit2, bomberDensity ??= new Map());
+      focus = densestEnemyWithin(unit, living, spec.burst.radius, limit2, bomberDensity ??= new Map(), 0, null, search);
     } else if (blocked && isRangedAttack(spec)) {
-      const visible = closestEnemy(unit, living, spec);
+      const visible = closestEnemy(unit, living, spec, search);
       if (visible.target) {
         focus = visible;
         blocked = false;
@@ -1379,7 +1431,7 @@ function moveUnits(living) {
     if (focus !== nearest && (unit.type === 'diamond' || spec.burst)) blocked = !clearWallShot(unit, target, spec);
     if (spec.box && !spec.projectileSpeed) {
       const attackTarget = range2 <= attackReach(spec, maxUnitRadius) ** 2 && !attackInRange(unit, target, spec, range2)
-        ? closestEnemy(unit, living, spec).target
+        ? closestEnemy(unit, living, spec, search).target
         : null;
       const focus = attackTarget ?? target;
       const heading = focus.x === unit.x && focus.z === unit.z
@@ -1427,7 +1479,7 @@ function moveUnits(living) {
     }
     const stopRange = blocked || boxApproach ? 0 : (spec.approachRange !== undefined || spec.projectileSpeed ? approachRange : contact);
     const gap = retreating ? spec.retreatRange - range : range - stopRange;
-    steer(unit, spec, living, dx, dz, gap);
+    steer(unit, spec, living, dx, dz, gap, search);
     if (unit.type === 'diamond') unit.heading = Math.atan2(unit.vx, unit.vz);
   }
   const holdOrigins = new Map();
@@ -1436,6 +1488,8 @@ function moveUnits(living) {
     moveOnGround(unit, unit.vx, unit.vz);
   }
   separateUnits(living, holdOrigins);
+  refreshUnitSearch(search);
+  return search;
 }
 const collisionBuffers = {
   masks: new Uint32Array(0), locations: new Int32Array(0),
@@ -1595,31 +1649,39 @@ function rectangleRayEntry(projectile, target, spec, distance, padding) {
   }
   return entry;
 }
-function firstProjectileHit(projectile, distance, living, padding = projectileRadius) {
+function firstProjectileHit(projectile, distance, living, padding = projectileRadius, search = buildUnitSearch(living)) {
   let target = null, closest = Infinity;
-  for (const unit of living) {
-    if (unit.team === projectile.team || projectile.hit?.has(unit.id)) continue;
-    const spec = unitTypes[unit.type];
-    const dx = unit.x - projectile.x, dz = unit.z - projectile.z;
-    const along = dx * projectile.dx + dz * projectile.dz;
-    const across = dx * projectile.dz - dz * projectile.dx;
-    if (spec.box) {
-      const limit = Math.min(distance, closest);
-      const bound = spec.radius + Math.SQRT2 * padding;
-      if (along + bound < 0 || along - bound > limit || Math.abs(across) > bound) continue;
-      const entry = rectangleRayEntry(projectile, unit, spec, limit, padding);
-      if (entry < closest) { target = unit; closest = entry; }
-      continue;
-    }
-    const radius = spec.radius + padding;
-    const chord2 = radius ** 2 - across ** 2;
-    if (chord2 < 0) continue;
-    const halfChord = Math.sqrt(chord2);
-    if (along + halfChord < 0 || along - halfChord > distance) continue;
-    const entry = Math.max(0, along - halfChord);
-    if (entry < closest) {
-      target = unit;
-      closest = entry;
+  const endX = projectile.x + projectile.dx * distance;
+  const endZ = projectile.z + projectile.dz * distance;
+  const reach = maxUnitRadius + Math.SQRT2 * padding + 1e-8;
+  const left = Math.min(projectile.x, endX) - reach, right = Math.max(projectile.x, endX) + reach;
+  const front = Math.min(projectile.z, endZ) - reach, back = Math.max(projectile.z, endZ) + reach;
+  for (const block of search[1 - projectile.team]) {
+    if (block.left > right || block.right < left || block.front > back || block.back < front) continue;
+    for (const unit of block.units) {
+      if (projectile.hit?.has(unit.id)) continue;
+      const spec = unitTypes[unit.type];
+      const dx = unit.x - projectile.x, dz = unit.z - projectile.z;
+      const along = dx * projectile.dx + dz * projectile.dz;
+      const across = dx * projectile.dz - dz * projectile.dx;
+      if (spec.box) {
+        const limit = Math.min(distance, closest);
+        const bound = spec.radius + Math.SQRT2 * padding;
+        if (along + bound < 0 || along - bound > limit || Math.abs(across) > bound) continue;
+        const entry = rectangleRayEntry(projectile, unit, spec, limit, padding);
+        if (entry < closest) { target = unit; closest = entry; }
+        continue;
+      }
+      const radius = spec.radius + padding;
+      const chord2 = radius ** 2 - across ** 2;
+      if (chord2 < 0) continue;
+      const halfChord = Math.sqrt(chord2);
+      if (along + halfChord < 0 || along - halfChord > distance) continue;
+      const entry = Math.max(0, along - halfChord);
+      if (entry < closest) {
+        target = unit;
+        closest = entry;
+      }
     }
   }
   return target && {target, distance: closest};
@@ -1755,8 +1817,9 @@ function launchDart(unit, heading, attack, range, lock = null) {
 function addWallStrike(x, y, z, team, trace = null) {
   state.impacts.push({x, y, z, team, trace, remaining: impactDuration});
 }
-function advanceProjectiles(living, damage) {
+function advanceProjectiles(living, damage, search) {
   if (!state.projectiles.length) return;
+  search ??= buildUnitSearch(living);
   state.projectiles = state.projectiles.filter(projectile => {
     if (projectile.arc) return advanceShell(projectile, living, damage);
     if (projectile.lock?.hp > 0) {
@@ -1769,7 +1832,7 @@ function advanceProjectiles(living, damage) {
     const distance = Math.min(projectile.remaining, projectile.attack.projectileSpeed * tick);
     const wallDistance = wallHitDistance(projectile.x, projectile.z, projectile.dx, projectile.dz, distance, projectileRadius);
     const hitLimit = wallDistance === Infinity ? distance : wallDistance - 1e-8;
-    for (let hit; hitLimit >= 0 && (hit = firstProjectileHit(projectile, hitLimit, living));) {
+    for (let hit; hitLimit >= 0 && (hit = firstProjectileHit(projectile, hitLimit, living, projectileRadius, search));) {
       const priorHits = projectile.hit?.size;
       const damageScale = priorHits ? (projectile.attack.pierceDamageRetention ?? 1) ** priorHits : 1;
       damage[hit.target.id] += damageAgainst(projectile.attack, hit.target) * damageScale;
@@ -1788,12 +1851,12 @@ function advanceProjectiles(living, damage) {
   });
 }
 
-function fireHitscan(unit, aim, spec, living, damage) {
+function fireHitscan(unit, aim, spec, living, damage, search) {
   const heading = Math.atan2(aim.x - unit.x, aim.z - unit.z);
   const ray = {x: unit.x, z: unit.z, team: unit.team, dx: Math.sin(heading), dz: Math.cos(heading)};
   const wallDistance = wallHitDistance(ray.x, ray.z, ray.dx, ray.dz, spec.attackRange);
   const limit = wallDistance === Infinity ? spec.attackRange : wallDistance - 1e-8;
-  const hit = limit >= 0 && firstProjectileHit(ray, limit, living, 0);
+  const hit = limit >= 0 && firstProjectileHit(ray, limit, living, 0, search);
   if (!hit && wallDistance === Infinity) return;
   unit.heading = heading;
   unit.aimX = -ray.dx;
@@ -1978,9 +2041,9 @@ function simulate() {
   if (state.waves.length) {
     for (const unit of living) { unit.previousX = unit.x; unit.previousZ = unit.z; }
   }
-  moveUnits(living);
+  const search = moveUnits(living);
   const damage = new Float32Array(state.units.length);
-  advanceProjectiles(living, damage);
+  advanceProjectiles(living, damage, search);
   advanceWaves(living, damage);
   advanceFields(living, damage);
   let contactBursts;
@@ -1988,7 +2051,7 @@ function simulate() {
   for (const unit of living) {
     const spec = unitTypes[unit.type];
     if (!spec.burst || damage[unit.id] >= unit.hp) continue;
-    const {target} = closestEnemy(unit, living, spec);
+    const {target} = closestEnemy(unit, living, spec, search);
     if (target) (contactBursts ??= []).push({unit, target});
   }
   let spent;
@@ -2013,14 +2076,14 @@ function simulate() {
     let aim;
     if (spec.blastRadius) {
       aim = densestEnemyWithin(unit, living, spec.blastRadius, spec.attackRange ** 2,
-        densityCounts ??= new Map(), spec.minAttackRange ** 2, spec);
+        densityCounts ??= new Map(), spec.minAttackRange ** 2, spec, search);
     }
-    else if (spec.hitscan) aim = enemyByPriorityWithin(unit, living, Infinity, target => target.hp, spec);
-    else if (unit.type === 'diamond') aim = enemyByPriorityWithin(unit, living, Infinity, diamondTargetPriority, spec);
+    else if (spec.hitscan) aim = enemyByPriorityWithin(unit, living, Infinity, target => target.hp, spec, search);
+    else if (unit.type === 'diamond') aim = enemyByPriorityWithin(unit, living, Infinity, diamondTargetPriority, spec, search);
     else if (unit.escortThreat && attackInRange(unit, unit.escortThreat, spec, distance2(unit, unit.escortThreat))) {
       aim = {target: unit.escortThreat, range2: distance2(unit, unit.escortThreat)};
     }
-    else aim = closestEnemy(unit, living, spec);
+    else aim = closestEnemy(unit, living, spec, search);
     const {target, range2} = aim;
     if (!target) continue;
     unit.cooldown = spec.attackGap;
@@ -2030,7 +2093,7 @@ function simulate() {
       unit.heading = Math.atan2(target.x - unit.x, target.z - unit.z);
       unit.beamShot = {fireAt: state.elapsed + spec.beam.chargeTime};
     } else if (spec.hitscan) {
-      fireHitscan(unit, target, spec, living, damage);
+      fireHitscan(unit, target, spec, living, damage, search);
     } else if (spec.waveSpeed) {
       state.waves.push({x: unit.x, z: unit.z, team: unit.team, radius: 0, attack: spec, hit: new Set()});
     } else if (spec.projectileSpeed) {
@@ -2546,11 +2609,59 @@ function createThreeScene(three, context) {
     octagon: new three.CylinderGeometry(1, 1, 1, 8).translate(0, .5, 0),
     'octagon-cap': new three.CircleGeometry(1, 8, -Math.PI / 2).rotateX(-Math.PI / 2)
   };
-  // Reuse the same meshes and materials as primitives move between frames.
+  // Batch opaque geometry and identical flat shadows. Other transparency keeps per-mesh sorting.
   const pools = new Map();
+  const batches = new Map();
+  const transform = three.InstancedMesh ? new three.Object3D() : null;
+  const tint = transform && new three.Color();
+  function newMaterial(lit, opacity, depthOffset) {
+    const Material = lit ? three.MeshLambertMaterial : three.MeshBasicMaterial;
+    return new Material({
+      opacity, transparent: opacity < 1, depthWrite: opacity === 1,
+      polygonOffset: depthOffset !== 0, polygonOffsetUnits: depthOffset
+    });
+  }
+  function drawInstance(shape, x, y, z, sx, sy, sz, color, lit, heading, depthOffset, opacity) {
+    const key = shape + ':' + lit + ':' + opacity + ':' + depthOffset;
+    let batch = batches.get(key);
+    if (!batch) {
+      batch = {used: 0, mesh: null};
+      batches.set(key, batch);
+    }
+    let mesh = batch.mesh;
+    if (!mesh || batch.used === mesh.instanceMatrix.count) {
+      const capacity = mesh ? mesh.instanceMatrix.count * 2 : 64;
+      const replacement = new three.InstancedMesh(
+        geometries[shape], mesh?.material ?? newMaterial(lit, opacity, depthOffset), capacity
+      );
+      replacement.frustumCulled = false;
+      if (opacity < 1) replacement.renderOrder = -1;
+      replacement.instanceMatrix.setUsage(three.DynamicDrawUsage);
+      replacement.setColorAt(0, tint);
+      replacement.instanceColor.setUsage(three.DynamicDrawUsage);
+      if (mesh) {
+        replacement.instanceMatrix.array.set(mesh.instanceMatrix.array);
+        replacement.instanceColor.array.set(mesh.instanceColor.array);
+        scene.remove(mesh);
+        mesh.dispose();
+      }
+      scene.add(replacement);
+      batch.mesh = mesh = replacement;
+    }
+    transform.position.set(x, y, z);
+    transform.rotation.y = heading;
+    transform.scale.set(sx, sy || 1, sz);
+    transform.updateMatrix();
+    tint.setRGB(color[0], color[1], color[2], three.SRGBColorSpace);
+    mesh.setMatrixAt(batch.used, transform.matrix);
+    mesh.setColorAt(batch.used++, tint);
+  }
   return {
     resize() { renderer.setDrawingBufferSize(camera.w, camera.h, camera.dpr); },
-    begin() { for (const pool of pools.values()) pool.used = 0; },
+    begin() {
+      for (const pool of pools.values()) pool.used = 0;
+      for (const batch of batches.values()) batch.used = 0;
+    },
     drawWalls(regions) {
       if (regions === drawnWalls) return;
       drawnWalls = regions;
@@ -2560,18 +2671,19 @@ function createThreeScene(three, context) {
       wallMesh.geometry.dispose();
       wallMesh.geometry = geometry;
     },
-    draw(shape, x, y, z, sx, sy, sz, color, lit = 0, heading = 0, depthOffset = 0) {
+    draw(shape, x, y, z, sx, sy, sz, color, lit = 0, heading = 0, depthOffset = 0, batchShadow = false) {
       const opacity = color[3] ?? 1;
+      if (transform && (opacity === 1 || batchShadow)) {
+        drawInstance(shape, x, y, z, sx, sy, sz, color, lit, heading, depthOffset, opacity);
+        return;
+      }
       const transparent = opacity < 1;
       const key = shape + ':' + lit + ':' + transparent + ':' + depthOffset;
       if (!pools.has(key)) pools.set(key, {used: 0, meshes: []});
       const pool = pools.get(key);
       let mesh = pool.meshes[pool.used++];
       if (!mesh) {
-        const Material = lit ? three.MeshLambertMaterial : three.MeshBasicMaterial;
-        mesh = new three.Mesh(geometries[shape], new Material({
-          transparent, depthWrite: !transparent, polygonOffset: depthOffset !== 0, polygonOffsetUnits: depthOffset
-        }));
+        mesh = new three.Mesh(geometries[shape], newMaterial(lit, opacity, depthOffset));
         pool.meshes.push(mesh);
         scene.add(mesh);
       }
@@ -2585,6 +2697,16 @@ function createThreeScene(three, context) {
     end() {
       for (const pool of pools.values()) {
         for (let i = pool.used; i < pool.meshes.length; i++) pool.meshes[i].visible = false;
+      }
+      for (const {mesh, used} of batches.values()) {
+        mesh.count = used;
+        mesh.visible = used > 0;
+        if (used) {
+          mesh.instanceMatrix.addUpdateRange(0, used * 16);
+          mesh.instanceColor.addUpdateRange(0, used * 3);
+          mesh.instanceMatrix.needsUpdate = true;
+          mesh.instanceColor.needsUpdate = true;
+        }
       }
       syncThreeCamera(view);
       renderer.render(scene, view);
@@ -2813,7 +2935,7 @@ function createRenderer(scene) {
     const capSize = ghost ? .69 : .72;
     const capColor = ghost ? [.11,.21,.20,.81] : [...(model.hurt > .08 ? [1,.94,.83] : color.cap),life];
     if (!ghost) {
-      draw(capShape,x+.10,.021,z,halfWidth * 1.16,0,halfLength * 1.09,[.04,.08,.09,.68 * life],0,heading);
+      draw(capShape,x+.10,.021,z,halfWidth * 1.16,0,halfLength * 1.09,[.04,.08,.09,.68 * life],0,heading,0,life === 1);
     }
     draw(body,x,unitBaseHeight,z,halfWidth,height,halfLength,ghost ? [...tone,.26] : [...color.body,life],1,heading);
     draw(body,x,rimBase,z,halfWidth * rimSize,rimHeight,halfLength * rimSize,ghost ? [...tone,.80] : [...color.rim,life],1,heading);
