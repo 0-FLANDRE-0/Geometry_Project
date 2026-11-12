@@ -894,7 +894,6 @@ const escortSlotOffsets = [
   [0, -2], [1, -2], [-1, -2], [2, 2], [-2, 2], [2, -2], [-2, -2]
 ];
 const maxUnitRadius = Math.max(...Object.values(unitTypes).map(spec => spec.radius));
-const collisionCellSize = 2 * maxUnitRadius;
 function rectangleFrame(unit, spec) {
   const heading = facingOf(unit);
   return {cos: Math.cos(heading), sin: Math.sin(heading), w: spec.width / 2, l: spec.length / 2};
@@ -1438,93 +1437,126 @@ function moveUnits(living) {
   }
   separateUnits(living, holdOrigins);
 }
+const collisionBuffers = {
+  masks: new Uint32Array(0), locations: new Int32Array(0),
+  radii: new Float64Array(0), rectangles: new Uint8Array(0)
+};
 function separateUnits(living, holdOrigins) {
-  const collisionCols = Math.ceil(2 * arena.x / collisionCellSize);
-  const collisionRows = Math.ceil(2 * arena.z / collisionCellSize);
-  const cells = new Array(collisionCols * collisionRows);
-  const locations = new Int32Array(living.length);
-  const radii = living.map(unit => unitTypes[unit.type].radius);
-  const rectangles = living.map(unit => unitTypes[unit.type].box);
-  const candidates = [];
-  const byIndex = (a, b) => a - b;
+  const count = living.length;
+  if (count === 0) return;
+  const {ceil, clz32, floor, max, min, sqrt} = Math;
+  if (collisionBuffers.locations.length < count) {
+    collisionBuffers.locations = new Int32Array(count);
+    collisionBuffers.radii = new Float64Array(count);
+    collisionBuffers.rectangles = new Uint8Array(count);
+  }
+  const {locations, radii, rectangles} = collisionBuffers;
+  let largestRadius = 0;
+  for (let i = 0; i < count; i++) {
+    const spec = unitTypes[living[i].type];
+    radii[i] = spec.radius;
+    rectangles[i] = spec.box ? 1 : 0;
+    largestRadius = max(largestRadius, spec.radius);
+  }
+  // Overlapping units can differ by at most one cell. Bound grid storage on larger maps.
+  const cellSize = max(2 * largestRadius, 2 * arena.x / 96, 2 * arena.z / 96);
+  const cols = ceil(2 * arena.x / cellSize), rows = ceil(2 * arena.z / cellSize);
+  const wordsPerCell = ceil(count / 32);
+  const maskCount = cols * rows * wordsPerCell;
+  if (collisionBuffers.masks.length < maskCount) collisionBuffers.masks = new Uint32Array(maskCount);
+  const {masks} = collisionBuffers;
+  masks.fill(0, 0, maskCount);
+  locations.fill(-1, 0, count);
+
+  // Each cell mask contains the units in that cell and its eight neighbors.
+  // A unit belongs to one cell, so toggling its bit adds or removes it from each affected mask.
+  function toggleNeighbors(cell, word, bit) {
+    const col = cell % cols, row = floor(cell / cols);
+    const firstCol = max(0, col - 1), lastCol = min(cols - 1, col + 1);
+    const firstRow = max(0, row - 1), lastRow = min(rows - 1, row + 1);
+    for (let z = firstRow; z <= lastRow; z++) {
+      const first = (z * cols + firstCol) * wordsPerCell + word;
+      for (let x = firstCol, offset = first; x <= lastCol; x++, offset += wordsPerCell) masks[offset] ^= bit;
+    }
+  }
   function updateCell(i) {
     const unit = living[i];
-    const x = clamp(Math.floor((unit.x + arena.x) / collisionCellSize), 0, collisionCols - 1);
-    const z = clamp(Math.floor((unit.z + arena.z) / collisionCellSize), 0, collisionRows - 1);
-    const cell = z * collisionCols + x;
+    const x = max(0, min(cols - 1, floor((unit.x + arena.x) / cellSize)));
+    const z = max(0, min(rows - 1, floor((unit.z + arena.z) / cellSize)));
+    const cell = z * cols + x;
     const previous = locations[i];
     if (cell === previous) return;
-    if (previous >= 0) cells[previous].delete(i);
-    (cells[cell] ??= new Set()).add(i);
+    const word = i >>> 5, bit = 1 << (i & 31);
+    if (previous >= 0) toggleNeighbors(previous, word, bit);
+    toggleNeighbors(cell, word, bit);
     locations[i] = cell;
   }
+  for (let i = 0; i < count; i++) updateCell(i);
+
   for (let pass = 0; pass < 3; pass++) {
-    cells.fill(undefined);
-    locations.fill(-1);
-    for (let i = 0; i < living.length; i++) updateCell(i);
-    for (let i = 0; i < living.length; i++) {
+    for (let i = 0; i < count; i++) {
       const a = living[i];
       let after = i, cell;
       do {
         cell = locations[i];
-        const col = cell % collisionCols, row = Math.floor(cell / collisionCols);
-        candidates.length = 0;
-        for (let z = Math.max(0, row - 1); z <= Math.min(row + 1, collisionRows - 1); z++) {
-          for (let x = Math.max(0, col - 1); x <= Math.min(col + 1, collisionCols - 1); x++) {
-            const neighbors = cells[z * collisionCols + x];
-            if (neighbors) for (const j of neighbors) if (j > after) candidates.push(j);
-          }
-        }
-        // Keep the original pair order, including neighbors reached after a collision moves this unit.
-        candidates.sort(byIndex);
-        for (const j of candidates) {
-          const b = living[j];
-          const dx = b.x - a.x, dz = b.z - a.z;
-          const d2 = dx * dx + dz * dz;
-          const contact = radii[i] + radii[j];
-          if (d2 >= contact * contact) continue;
-          let normalX, normalZ, depth;
-          if (rectangles[i] || rectangles[j]) {
-            const hit = rectangleContact(a, b, 0);
-            if (!hit) continue;
-            normalX = hit.x;
-            normalZ = hit.z;
-            depth = hit.depth;
-          } else {
-            const distance = Math.sqrt(d2);
-            normalX = distance > 1e-8 ? dx / distance : 1;
-            normalZ = distance > 1e-8 ? dz / distance : 0;
-            depth = contact - distance;
-          }
-          const opposing = a.team !== b.team;
-          const aOrigin = (opposing || a.beamShot) && holdOrigins.get(a);
-          const bOrigin = (opposing || b.beamShot) && holdOrigins.get(b);
-          if (aOrigin && bOrigin) {
-            // Units holding their ground block each other's step.
-            a.x = aOrigin.x; a.z = aOrigin.z;
-            b.x = bOrigin.x; b.z = bOrigin.z;
-          } else {
-            let aWeight = 1, bWeight = 1;
-            if (opposing) {
-              aWeight = unitTypes[a.type].enemyPushWeight ?? 1;
-              bWeight = unitTypes[b.type].enemyPushWeight ?? 1;
-            } else if (!aOrigin && !bOrigin) {
-              if (a.protectedAlly === b) bWeight = 0;
-              else if (b.protectedAlly === a) aWeight = 0;
+        const base = cell * wordsPerCell;
+        const firstWord = (after + 1) >>> 5;
+        // Low bits first preserves pair order. After a cell change, resume above the last pair.
+        candidates: for (let word = firstWord; word < wordsPerCell; word++) {
+          let mask = masks[base + word];
+          if (word === firstWord) mask &= -1 << ((after + 1) & 31);
+          while (mask) {
+            const bit = mask & -mask;
+            const j = (word << 5) + 31 - clz32(bit);
+            mask ^= bit;
+            const b = living[j];
+            const dx = b.x - a.x, dz = b.z - a.z;
+            const d2 = dx * dx + dz * dz;
+            const contact = radii[i] + radii[j];
+            if (d2 >= contact * contact) continue;
+            let normalX, normalZ, depth;
+            if (rectangles[i] || rectangles[j]) {
+              const hit = rectangleContact(a, b, 0);
+              if (!hit) continue;
+              normalX = hit.x;
+              normalZ = hit.z;
+              depth = hit.depth;
+            } else {
+              const distance = sqrt(d2);
+              normalX = distance > 1e-8 ? dx / distance : 1;
+              normalZ = distance > 1e-8 ? dz / distance : 0;
+              depth = contact - distance;
             }
-            if (aOrigin) aWeight = 0;
-            if (bOrigin) bWeight = 0;
-            const totalWeight = aWeight + bWeight;
-            const aShare = depth * (aWeight / totalWeight);
-            const bShare = depth * (bWeight / totalWeight);
-            moveOnGround(a, -normalX * aShare, -normalZ * aShare);
-            moveOnGround(b, normalX * bShare, normalZ * bShare);
-          }
-          updateCell(j);
-          updateCell(i);
-          if (locations[i] !== cell) {
-            after = j;
-            break;
+            const opposing = a.team !== b.team;
+            const aOrigin = (opposing || a.beamShot) && holdOrigins.get(a);
+            const bOrigin = (opposing || b.beamShot) && holdOrigins.get(b);
+            if (aOrigin && bOrigin) {
+              // Units holding their ground block each other's step.
+              a.x = aOrigin.x; a.z = aOrigin.z;
+              b.x = bOrigin.x; b.z = bOrigin.z;
+            } else {
+              let aWeight = 1, bWeight = 1;
+              if (opposing) {
+                aWeight = unitTypes[a.type].enemyPushWeight ?? 1;
+                bWeight = unitTypes[b.type].enemyPushWeight ?? 1;
+              } else if (!aOrigin && !bOrigin) {
+                if (a.protectedAlly === b) bWeight = 0;
+                else if (b.protectedAlly === a) aWeight = 0;
+              }
+              if (aOrigin) aWeight = 0;
+              if (bOrigin) bWeight = 0;
+              const totalWeight = aWeight + bWeight;
+              const aShare = depth * (aWeight / totalWeight);
+              const bShare = depth * (bWeight / totalWeight);
+              moveOnGround(a, -normalX * aShare, -normalZ * aShare);
+              moveOnGround(b, normalX * bShare, normalZ * bShare);
+            }
+            updateCell(j);
+            updateCell(i);
+            if (locations[i] !== cell) {
+              after = j;
+              break candidates;
+            }
           }
         }
       } while (locations[i] !== cell);
@@ -1534,8 +1566,12 @@ function separateUnits(living, holdOrigins) {
       const frame = rectangles[i] ? rectangleFrame(u, unitTypes[u.type]) : null;
       const x = frame ? projectedHalfSize(frame, 1, 0) : radius;
       const z = frame ? projectedHalfSize(frame, 0, 1) : radius;
-      u.x = clamp(u.x, -arena.x + x, arena.x - x);
-      u.z = clamp(u.z, -arena.z + z, arena.z - z);
+      const nextX = max(-arena.x + x, min(u.x, arena.x - x));
+      const nextZ = max(-arena.z + z, min(u.z, arena.z - z));
+      if (nextX === u.x && nextZ === u.z) continue;
+      u.x = nextX;
+      u.z = nextZ;
+      if (pass < 2) updateCell(i);
     }
   }
 }
