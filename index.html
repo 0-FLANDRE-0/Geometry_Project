@@ -340,7 +340,10 @@ const hitscanTraceDuration = .18;
 const defaultArena = {x: 35, z: 35, split: 0, pits: [], walls: [], obstacles: []};
 const maxTerrainRectangles = 32;
 const wallHeight = 1.45;
+const wallTopColor = [.56, .60, .67];
+const wallSideColor = [.33, .37, .44];
 const terrainRegionCache = new WeakMap();
+const wallRegionCache = new WeakMap();
 const terrainRoutes = new Map();
 const arena = {...defaultArena};
 const deploy = {type: 'circle', count: 10, rows: 2, anchor: null, groups: [], units: [], ready: false, preview: null};
@@ -371,21 +374,42 @@ function insideTerrain({x,z}, pit, margin = 0) {
 function terrainOverlaps(a, b) {
   return a.left < b.right && b.left < a.right && a.front < b.back && b.front < a.back;
 }
-function addTerrainRectangle(pits, pit) {
+function terrainTouches(a, b) {
+  const x = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+  const z = Math.min(a.back, b.back) - Math.max(a.front, b.front);
+  return x >= 0 && z >= 0 && (x > 0 || z > 0);
+}
+function snapWallEdges(rectangle, walls) {
+  const {left, right, front, back} = rectangle;
+  const snapped = {...rectangle};
+  for (const wall of walls) {
+    // Extend by at most one editor grid step, and only towards a shared side.
+    if (front < wall.back && wall.front < back) {
+      if (left - wall.right > 0 && left - wall.right <= .5) snapped.left = Math.min(snapped.left, wall.right);
+      if (wall.left - right > 0 && wall.left - right <= .5) snapped.right = Math.max(snapped.right, wall.left);
+    }
+    if (left < wall.right && wall.left < right) {
+      if (front - wall.back > 0 && front - wall.back <= .5) snapped.front = Math.min(snapped.front, wall.back);
+      if (wall.front - back > 0 && wall.front - back <= .5) snapped.back = Math.max(snapped.back, wall.front);
+    }
+  }
+  return snapped;
+}
+function addTerrainRectangle(rectangles, rectangle, connects = terrainOverlaps) {
   const contains = (outer, inner) => outer.left <= inner.left && outer.right >= inner.right
     && outer.front <= inner.front && outer.back >= inner.back;
-  const remaining = [...pits];
-  let merged = pit;
+  const remaining = [...rectangles];
+  let merged = rectangle;
   for (let i = 0; i < remaining.length;) {
     const other = remaining[i];
-    if (contains(other, merged)) return pits;
+    if (contains(other, merged)) return rectangles;
     if (contains(merged, other)) {
       remaining.splice(i, 1);
       continue;
     }
     const sameWidth = merged.left === other.left && merged.right === other.right;
     const sameDepth = merged.front === other.front && merged.back === other.back;
-    if ((sameWidth || sameDepth) && terrainOverlaps(merged, other)) {
+    if ((sameWidth || sameDepth) && connects(merged, other)) {
       merged = {
         left: Math.min(merged.left, other.left), right: Math.max(merged.right, other.right),
         front: Math.min(merged.front, other.front), back: Math.max(merged.back, other.back)
@@ -397,43 +421,47 @@ function addTerrainRectangle(pits, pit) {
   remaining.push(merged);
   return remaining;
 }
-function terrainRegionOutline(parts) {
-  const xs = [...new Set(parts.flatMap(pit => [pit.left, pit.right]))].sort((a,b) => a - b);
-  const zs = [...new Set(parts.flatMap(pit => [pit.front, pit.back]))].sort((a,b) => a - b);
-  // A cell is entirely inside or outside the union because the grid follows every rectangle edge.
+function terrainRegionSurface(parts, raised) {
+  const xs = [...new Set(parts.flatMap(({left, right}) => [left, right]))].sort((a,b) => a - b);
+  const zs = [...new Set(parts.flatMap(({front, back}) => [front, back]))].sort((a,b) => a - b);
+  // The grid follows every rectangle edge, so each cell is entirely inside or outside the union.
   const filled = zs.slice(0, -1).map((front, row) => xs.slice(0, -1).map((left, col) =>
-    parts.some(pit => left >= pit.left && xs[col + 1] <= pit.right && front >= pit.front && zs[row + 1] <= pit.back)));
-  const edges = [];
+    parts.some(part => left >= part.left && xs[col + 1] <= part.right && front >= part.front && zs[row + 1] <= part.back)));
+  const edges = [], tops = [];
   for (const [row, cells] of filled.entries()) {
     for (const [col, inside] of cells.entries()) {
       if (!inside) continue;
       const left = xs[col], right = xs[col + 1], front = zs[row], back = zs[row + 1];
-      if (!cells[col - 1]) edges.push([left, front, left, back]);
-      if (!cells[col + 1]) edges.push([right, front, right, back]);
+      if (raised) tops.push({left, right, front, back});
+      // The edge direction keeps the outer normal consistent, including around enclosed openings.
       if (!filled[row - 1]?.[col]) edges.push([left, front, right, front]);
-      if (!filled[row + 1]?.[col]) edges.push([left, back, right, back]);
+      if (!cells[col + 1]) edges.push([right, front, right, back]);
+      if (!filled[row + 1]?.[col]) edges.push([right, back, left, back]);
+      if (!cells[col - 1]) edges.push([left, back, left, front]);
     }
   }
-  return edges;
+  return {edges, tops};
 }
-function terrainRegions(pits) {
-  const cached = terrainRegionCache.get(pits);
+function terrainRegions(rectangles, raised = false) {
+  const cache = raised ? wallRegionCache : terrainRegionCache;
+  const cached = cache.get(rectangles);
   if (cached) return cached;
-  const ungrouped = new Set(pits);
+  const connects = raised ? terrainTouches : terrainOverlaps;
+  const ungrouped = new Set(rectangles);
   const regions = [];
   for (const seed of ungrouped) {
     ungrouped.delete(seed);
     const parts = [seed];
     for (const part of parts) {
       for (const other of ungrouped) {
-        if (!terrainOverlaps(part, other)) continue;
+        if (!connects(part, other)) continue;
         ungrouped.delete(other);
         parts.push(other);
       }
     }
-    regions.push({parts, edges: terrainRegionOutline(parts)});
+    regions.push({parts, ...terrainRegionSurface(parts, raised)});
   }
-  terrainRegionCache.set(pits, regions);
+  cache.set(rectangles, regions);
   return regions;
 }
 function unitOverTerrain(unit, pits) {
@@ -751,7 +779,7 @@ function updateStageTools() {
   const text = notice?.text ?? (draft.name + ' · ' + draft.width + ' × ' + draft.depth
     + ' · 적 ' + draft.groups.reduce((sum, group) => sum + group.units.length, 0) + '기'
     + (draft.pits.length ? ' · 구멍 ' + terrainRegions(draft.pits).length + '개' : '')
-    + (draft.walls.length ? ' · 차단벽 ' + terrainRegions(draft.walls).length + '개' : ''));
+    + (draft.walls.length ? ' · 차단벽 ' + terrainRegions(draft.walls, true).length + '개' : ''));
   if (caption.textContent !== text) caption.textContent = text;
   caption.dataset.error = Boolean(notice?.error);
 }
@@ -2149,18 +2177,38 @@ function previewTerrain(from, to) {
   const snap = (value, extent) => clamp(Math.round(value * 2) / 2, -extent, extent);
   const x0 = snap(from.x, arena.x), x1 = snap(to.x, arena.x);
   const z0 = snap(from.z, arena.z), z1 = snap(to.z, arena.z);
-  const rectangle = {left: Math.min(x0,x1), right: Math.max(x0,x1), front: Math.min(z0,z1), back: Math.max(z0,z1)};
-  const boundsError = terrainBoundsError(rectangle, arena);
-  const rectangles = boundsError ? arena[kind] : addTerrainRectangle(arena[kind], rectangle);
+  const raw = {left: Math.min(x0,x1), right: Math.max(x0,x1), front: Math.min(z0,z1), back: Math.max(z0,z1)};
+  const boundsError = terrainBoundsError(raw, arena);
+  const isWall = kind === 'walls';
+  const rectangle = isWall && !boundsError ? snapWallEdges(raw, arena.walls) : raw;
+  const {terrainPreview} = stageEditor;
+  if (terrainPreview && Object.keys(rectangle).every(key => rectangle[key] === terrainPreview.rectangle[key])
+      && terrainPreview.boundsError === boundsError) return;
+  const connects = isWall ? terrainTouches : terrainOverlaps;
+  const rectangles = boundsError ? arena[kind] : addTerrainRectangle(arena[kind], rectangle, connects);
   const error = boundsError
     || (rectangles.length > maxTerrainRectangles ? label + '을 구성하는 사각형은 최대 ' + maxTerrainRectangles + '개까지 넣을 수 있어.' : '')
     || (arena[otherKind].some(other => terrainOverlaps(rectangle, other)) ? '차단벽과 바닥 구멍이 겹쳐. 다른 곳에 그려줘.' : '')
     || (deploy.units.some(unit => unitOverTerrain(unit, [rectangle])) ? '배치한 적과 ' + label + '이 겹쳐. 다른 곳에 그려줘.' : '');
-  stageEditor.terrainPreview = {rectangle, rectangles, error};
-  const joins = arena[kind].some(other => terrainOverlaps(rectangle, other));
-  ui.hint.textContent = error || (joins ? '놓으면 겹친 ' + label + '과 합치기' : '놓으면 ' + label + ' 추가');
+  stageEditor.terrainPreview = {rectangle, rectangles, error, boundsError};
+  const joins = arena[kind].some(other => connects(rectangle, other));
+  ui.hint.textContent = error || (joins ? '놓으면 기존 ' + label + '과 합치기' : '놓으면 ' + label + ' 추가');
   ui.hint.dataset.error = Boolean(error);
   needsPaint = true;
+}
+function wallRegionOnRay(regions, top, ground) {
+  const dx = ground.x - top.x, dz = ground.z - top.z;
+  let nearest = Infinity, selected = null;
+  for (const region of regions) {
+    for (const rectangle of region.parts) {
+      const contact = wallRayInterval(top.x, top.z, dx, dz, Math.min(1, nearest), rectangle, .08);
+      if (contact && contact.entry < nearest) {
+        nearest = contact.entry;
+        selected = region;
+      }
+    }
+  }
+  return selected;
 }
 function finishTerrain(event, point) {
   const screen = viewportPoint(event.clientX, event.clientY);
@@ -2173,11 +2221,15 @@ function finishTerrain(event, point) {
     if (!error) setStageTerrain(kind, rectangles);
     else needsPaint = true;
   } else {
-    const regions = terrainRegions(arena[kind]);
-    const regionAt = position => regions.findLast(region => region.parts.some(rectangle =>
-      insideTerrain(position, rectangle, .08)));
-    const top = kind === 'walls' && groundPoint(screen.x, screen.y + wallHeight * camera.cos * camera.scale);
-    stageEditor.selectedTerrain = (top && regionAt(top)) || regionAt(ground) || null;
+    const isWall = kind === 'walls';
+    const regions = terrainRegions(arena[kind], isWall);
+    if (isWall) {
+      const top = groundPoint(screen.x, screen.y + wallHeight * camera.cos * camera.scale);
+      stageEditor.selectedTerrain = wallRegionOnRay(regions, top, ground);
+    } else {
+      stageEditor.selectedTerrain = regions.findLast(region => region.parts.some(rectangle =>
+        insideTerrain(ground, rectangle, .08))) ?? null;
+    }
     updateDeploy();
   }
 }
@@ -2329,6 +2381,35 @@ function syncThreeCamera(view) {
   view.updateProjectionMatrix();
 }
 
+function createWallGeometry(three, regions, materialColor) {
+  const vertices = [], colors = [], triangles = [];
+  const top = materialColor.clone().setRGB(...wallTopColor, three.SRGBColorSpace);
+  const side = materialColor.clone().setRGB(...wallSideColor, three.SRGBColorSpace);
+  function quad(a, b, c, d, {r, g, b: blue}) {
+    const start = vertices.length / 3;
+    vertices.push(...a, ...b, ...c, ...d);
+    for (let i = 0; i < 4; i++) colors.push(r, g, blue);
+    triangles.push(start, start + 1, start + 2, start, start + 2, start + 3);
+  }
+  for (const {tops, edges} of regions) {
+    for (const {left, right, front, back} of tops) {
+      quad([left,wallHeight,front], [left,wallHeight,back], [right,wallHeight,back], [right,wallHeight,front], top);
+    }
+    for (const [x0,z0,x1,z1] of edges) {
+      quad([x0,0,z0], [x0,wallHeight,z0], [x1,wallHeight,z1], [x1,0,z1], side);
+    }
+  }
+  // Use the buffer attribute type supplied by the bundled Three.js geometry.
+  const geometry = new three.PlaneGeometry();
+  const FloatAttribute = geometry.getAttribute('position').constructor;
+  geometry.setAttribute('position', new FloatAttribute(vertices, 3));
+  geometry.setAttribute('color', new FloatAttribute(colors, 3));
+  geometry.deleteAttribute('normal');
+  geometry.deleteAttribute('uv');
+  geometry.setIndex(triangles);
+  geometry.computeVertexNormals();
+  return geometry;
+}
 function createThreeScene(three, context) {
   const renderer = new three.WebGLRenderer({canvas: context.canvas, context, alpha: true, antialias: true});
   renderer.setClearColor(0x000000, 0);
@@ -2338,6 +2419,10 @@ function createThreeScene(three, context) {
   const sunlight = new three.DirectionalLight(0xffffff, 1.15);
   sunlight.position.set(-.46, .82, -.34);
   scene.add(sunlight);
+  const wallMesh = new three.Mesh(undefined, new three.MeshLambertMaterial({vertexColors: true}));
+  wallMesh.visible = false;
+  scene.add(wallMesh);
+  let drawnWalls = null;
 
   const squareBody = new three.CylinderGeometry(1, 1, 1, 4, 1, false, Math.PI / 4).translate(0, .5, 0);
   const squareCap = new three.CircleGeometry(1, 4, -Math.PI / 4).rotateX(-Math.PI / 2);
@@ -2391,6 +2476,15 @@ function createThreeScene(three, context) {
   return {
     resize() { renderer.setDrawingBufferSize(camera.w, camera.h, camera.dpr); },
     begin() { for (const pool of pools.values()) pool.used = 0; },
+    drawWalls(regions) {
+      if (regions === drawnWalls) return;
+      drawnWalls = regions;
+      wallMesh.visible = regions.length > 0;
+      if (!wallMesh.visible) return;
+      const geometry = createWallGeometry(three, regions, wallMesh.material.color);
+      wallMesh.geometry.dispose();
+      wallMesh.geometry = geometry;
+    },
     draw(shape, x, y, z, sx, sy, sz, color, lit = 0, heading = 0) {
       const opacity = color[3] ?? 1;
       const transparent = opacity < 1;
@@ -2444,11 +2538,14 @@ function createGraphicsScene() {
   return createCanvasScene(fallback);
 }
 
-function fillPolygon(ctx, points) {
-  ctx.beginPath();
+function polygonPath(ctx, points) {
   ctx.moveTo(points[0].x, points[0].y);
   for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
   ctx.closePath();
+}
+function fillPolygon(ctx, points) {
+  ctx.beginPath();
+  polygonPath(ctx, points);
   ctx.fill();
 }
 
@@ -2475,6 +2572,28 @@ function createCanvasScene(ctx) {
     begin() {
       ctx.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
       ctx.clearRect(0, 0, camera.w, camera.h);
+    },
+    drawWalls(regions) {
+      if (!regions.length) return;
+      ctx.fillStyle = rgba(wallSideColor, .82);
+      ctx.beginPath();
+      for (const {edges} of regions) {
+        for (const [x0,z0,x1,z1] of edges) {
+          const facing = (z1 - z0) * camera.sinYaw - (x1 - x0) * camera.cosYaw;
+          if (facing <= 0) continue;
+          polygonPath(ctx, [project(x0,0,z0), project(x0,wallHeight,z0), project(x1,wallHeight,z1), project(x1,0,z1)]);
+        }
+      }
+      ctx.fill();
+      ctx.fillStyle = rgba(wallTopColor, .935);
+      ctx.beginPath();
+      for (const {tops} of regions) {
+        for (const {left, right, front, back} of tops) {
+          polygonPath(ctx, [project(left,wallHeight,front), project(left,wallHeight,back),
+            project(right,wallHeight,back), project(right,wallHeight,front)]);
+        }
+      }
+      ctx.fill();
     },
     draw(shape, x, y, z, sx, sy, sz, color, lit = 0, heading = 0) {
       const base = project(x,y,z);
@@ -2588,12 +2707,6 @@ function createRenderer(scene) {
     for (const x of [-halfWidth, halfWidth]) slab(x,.02,0,.18,depth,[.41,.56,.53]);
     for (const z of [-halfDepth, halfDepth]) slab(0,.02,z,width,.18,z > 0 ? [.37,.65,.58] : [.55,.37,.35]);
   }
-  function drawWall({left, right, front, back}) {
-    const x = (left + right) / 2, z = (front + back) / 2;
-    const width = right - left, depth = back - front;
-    draw('square', x, .02, z, width / Math.SQRT2, wallHeight - .10, depth / Math.SQRT2, [.33,.37,.44], 1);
-    draw('square', x, wallHeight - .08, z, width / Math.SQRT2, .08, depth / Math.SQRT2, [.56,.60,.67], 1);
-  }
   const teams = [
     {body:[.25,.66,.57], rim:[.58,1,.87], cap:[.17,.46,.41], ghost:[.44,.92,.79]},
     {body:[.76,.35,.28], rim:[1,.67,.55], cap:[.58,.24,.20], ghost:[1,.43,.34]}
@@ -2633,12 +2746,12 @@ function createRenderer(scene) {
     if (spec.beam) draw(capShape,x,height+.108*life,z,halfWidth * .25,0,halfLength * .57,[...color.rim,life],0,heading);
   }
   return {
-    render(units, preview, valid, projectiles) {
+    render(units, preview, valid, projectiles, walls) {
       scene.begin();
       updateFloor();
       for (const floor of slabs) draw('plane',floor.x,floor.y,floor.z,floor.width,1,floor.depth,floor.color);
       const byDepth = (a, b) => (a.x - b.x) * camera.sinYaw + (a.z - b.z) * camera.cosYaw;
-      for (const wall of arena.walls) drawWall(wall);
+      scene.drawWalls(walls);
       for (const model of [...units].sort(byDepth)) unit(model);
       for (const shot of projectiles) {
         if (shot.arc) {
@@ -2957,15 +3070,16 @@ function drawDamageField(ctx, field) {
   }
   ctx.globalAlpha = 1;
 }
-function drawMarks(ctx, units, preview, valid, projectiles) {
+function drawMarks(ctx, units, preview, valid, projectiles, walls, wallPreview) {
   ctx.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
   ctx.clearRect(0, 0, camera.w, camera.h);
   ctx.textAlign = 'center';
-  for (const [rectangles, y, color] of [[arena.pits, .03, '#638487'], [arena.walls, wallHeight, '#a7aebd']]) {
-    for (const region of terrainRegions(rectangles)) {
-      const selected = stageEditor.selectedTerrain === region;
-      ctx.strokeStyle = selected ? '#f6d393' : color;
-      ctx.lineWidth = selected ? 2 : 1;
+  for (const [regions, y, color] of [[terrainRegions(arena.pits), .03, '#638487'], [walls, wallHeight, '#a7aebd']]) {
+    for (const region of regions) {
+      const highlighted = stageEditor.selectedTerrain === region
+        || (y === wallHeight && wallPreview && region.parts.some(part => terrainTouches(part, wallPreview.rectangle)));
+      ctx.strokeStyle = highlighted ? '#f6d393' : color;
+      ctx.lineWidth = highlighted ? 2 : 1;
       ctx.beginPath();
       for (const [x0,z0,x1,z1] of region.edges) {
         const start = project(x0, y, z0), end = project(x1, y, z1);
@@ -2975,7 +3089,7 @@ function drawMarks(ctx, units, preview, valid, projectiles) {
       ctx.stroke();
     }
   }
-  if (stageEditor.terrainPreview) {
+  if (stageEditor.terrainPreview && !wallPreview) {
     const {rectangle, error} = stageEditor.terrainPreview;
     ctx.strokeStyle = error ? '#ffab97' : '#f6d393';
     ctx.fillStyle = error ? '#ffab9730' : '#f6d39330';
@@ -3155,8 +3269,11 @@ function boot() {
       : selected ? deploy.groups.filter(group => group !== selected).flatMap(group => group.units) : deploy.units;
     const preview = state.phase === 'deploy' ? deploy.preview.units : [];
     const valid = state.phase !== 'deploy' || !deploy.preview.error;
-    renderer.render(units, preview, valid, state.projectiles);
-    drawMarks(marks, units, preview, valid, state.projectiles);
+    const terrainPreview = stageEditor.terrainPreview;
+    const wallPreview = stageEditor.terrainMode === 'walls' && terrainPreview && !terrainPreview.error ? terrainPreview : null;
+    const walls = terrainRegions(wallPreview?.rectangles ?? arena.walls, true);
+    renderer.render(units, preview, valid, state.projectiles, walls);
+    drawMarks(marks, units, preview, valid, state.projectiles, walls, wallPreview);
   }
   requestAnimationFrame(frame);
 }
