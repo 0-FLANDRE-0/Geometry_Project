@@ -2044,8 +2044,12 @@ function simulate() {
   updatePhase();
 }
 
-const unitBodyHeight = .58;
-const unitCapHeight = unitBodyHeight + .11;
+const unitBodyHeight = .52;
+const unitBaseHeight = .024;
+const unitRimHeight = .079;
+const unitCapLift = .012;
+const unitDetailLift = .008;
+const unitCapHeight = unitBaseHeight + unitBodyHeight + unitRimHeight + unitCapLift + unitDetailLift;
 const overhead = Math.PI / 2;
 const defaultPitch = 65 * Math.PI / 180;
 const minPitch = 10 * Math.PI / 180;
@@ -2410,6 +2414,8 @@ function syncThreeCamera(view) {
   view.lookAt(camera.targetX, 0, camera.targetZ);
   view.aspect = camera.w / camera.h;
   view.fov = 2 * Math.atan(camera.h / (2 * camera.focal)) * 180 / Math.PI;
+  // The camera orbits outside the arena, so a tiny near plane only wastes depth precision.
+  view.near = camera.distance / 16;
   view.far = 4 * camera.distance;
   view.updateProjectionMatrix();
 }
@@ -2518,16 +2524,18 @@ function createThreeScene(three, context) {
       wallMesh.geometry.dispose();
       wallMesh.geometry = geometry;
     },
-    draw(shape, x, y, z, sx, sy, sz, color, lit = 0, heading = 0) {
+    draw(shape, x, y, z, sx, sy, sz, color, lit = 0, heading = 0, depthOffset = 0) {
       const opacity = color[3] ?? 1;
       const transparent = opacity < 1;
-      const key = shape + ':' + lit + ':' + transparent;
+      const key = shape + ':' + lit + ':' + transparent + ':' + depthOffset;
       if (!pools.has(key)) pools.set(key, {used: 0, meshes: []});
       const pool = pools.get(key);
       let mesh = pool.meshes[pool.used++];
       if (!mesh) {
         const Material = lit ? three.MeshLambertMaterial : three.MeshBasicMaterial;
-        mesh = new three.Mesh(geometries[shape], new Material({transparent, depthWrite: !transparent}));
+        mesh = new three.Mesh(geometries[shape], new Material({
+          transparent, depthWrite: !transparent, polygonOffset: depthOffset !== 0, polygonOffsetUnits: depthOffset
+        }));
         pool.meshes.push(mesh);
         scene.add(mesh);
       }
@@ -2761,22 +2769,25 @@ function createRenderer(scene) {
     const x = model.x + (model.aimX || 0) * swing;
     const z = model.z + (model.aimZ || 0) * swing;
     const height = (unitBodyHeight + swing * .35) * life;
-    if (ghost) {
-      const tone = allowed ? color.ghost : [1,.77,.38];
-      draw(body,x,.025,z,halfWidth,height,halfLength,[...tone,.26],1,heading);
-      draw(body,x,height+.025,z,halfWidth * .91,.052,halfLength * .91,[...tone,.80],1,heading);
-      draw(capShape,x,height+.081,z,halfWidth * .69,0,halfLength * .69,[.11,.21,.20,.81],0,heading);
-      if (spec.field) draw(capShape,x,height+.085,z,halfWidth * .30,0,halfLength * .30,[...tone,.85],0,heading);
-      if (spec.beam) draw(capShape,x,height+.085,z,halfWidth * .25,0,halfLength * .57,[...tone,.85],0,heading);
-      return;
+    const tone = allowed ? color.ghost : [1,.77,.38];
+    const rimBase = unitBaseHeight + height;
+    const rimHeight = ghost ? .052 : unitRimHeight * life;
+    const capY = rimBase + rimHeight + unitCapLift;
+    const rimSize = ghost ? .91 : .94;
+    const capSize = ghost ? .69 : .72;
+    const capColor = ghost ? [.11,.21,.20,.81] : [...(model.hurt > .08 ? [1,.94,.83] : color.cap),life];
+    if (!ghost) {
+      draw(capShape,x+.10,.021,z,halfWidth * 1.16,0,halfLength * 1.09,[.04,.08,.09,.68 * life],0,heading);
     }
-    draw(capShape,x+.10,.021,z+.13,halfWidth * 1.16,0,halfLength * 1.09,[.04,.08,.09,.68 * life],0,heading);
-    draw(body,x,.024,z,halfWidth,height,halfLength,[...color.body,life],1,heading);
-    draw(body,x,height+.024,z,halfWidth * .94,.079*life,halfLength * .94,[...color.rim,life],1,heading);
-    const cap = model.hurt > .08 ? [1,.94,.83] : color.cap;
-    draw(capShape,x,height+.105*life,z,halfWidth * .72,0,halfLength * .72,[...cap,life],0,heading);
-    if (spec.field) draw(capShape,x,height+.108*life,z,halfWidth * .30,0,halfLength * .30,[...color.rim,life],0,heading);
-    if (spec.beam) draw(capShape,x,height+.108*life,z,halfWidth * .25,0,halfLength * .57,[...color.rim,life],0,heading);
+    draw(body,x,unitBaseHeight,z,halfWidth,height,halfLength,ghost ? [...tone,.26] : [...color.body,life],1,heading);
+    draw(body,x,rimBase,z,halfWidth * rimSize,rimHeight,halfLength * rimSize,ghost ? [...tone,.80] : [...color.rim,life],1,heading);
+    // Raised decals also receive a small depth bias for low precision depth buffers.
+    draw(capShape,x,capY,z,halfWidth * capSize,0,halfLength * capSize,capColor,0,heading,-2);
+    if (spec.field || spec.beam) {
+      const detailColor = ghost ? [...tone,.85] : [...color.rim,life];
+      draw(capShape,x,capY + unitDetailLift,z,halfWidth * (spec.field ? .30 : .25),0,
+        halfLength * (spec.field ? .30 : .57),detailColor,0,heading,-4);
+    }
   }
   return {
     render(units, preview, valid, projectiles, walls) {
