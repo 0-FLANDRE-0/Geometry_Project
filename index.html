@@ -263,7 +263,7 @@ button:disabled { opacity: .37; cursor: default; }
     </form>
   </dialog>
 </div>
-<script src="./vendor/three-r187.min.js"></script>
+<script src="./vendor/three-r187.min.js?v=2"></script>
 <script>
 'use strict';
 const byId = id => document.getElementById(id);
@@ -360,8 +360,8 @@ const teamHeading = unit => unit.team === 0 ? Math.PI : 0;
 const facingOf = unit => unit.heading ?? teamHeading(unit);
 let needsPaint = true;
 
-function onMap({x,z}) {
-  return Math.abs(x) <= arena.x && Math.abs(z) <= arena.z;
+function onMap(point) {
+  return Boolean(point && Math.abs(point.x) <= arena.x && Math.abs(point.z) <= arena.z);
 }
 function terrainRadius(type) {
   const spec = unitTypes[type];
@@ -2044,23 +2044,30 @@ function simulate() {
   updatePhase();
 }
 
+const unitBodyHeight = .74;
+const unitCapHeight = unitBodyHeight + .11;
 const overhead = Math.PI / 2;
+const defaultPitch = 65 * Math.PI / 180;
 const minPitch = 10 * Math.PI / 180;
 const maxZoom = 10;
 const camera = {
-  w: 1, h: 1, dpr: 1, scale: 1, centerY: 0, yaw: 0, pitch: overhead, zoom: 1,
-  targetX: 0, targetZ: 0, sinYaw: 0, cosYaw: 1, sin: 1, cos: 0
+  w: 1, h: 1, dpr: 1, scale: 1, distance: 1, focal: 1, yaw: 0, pitch: defaultPitch, zoom: 1,
+  targetX: 0, targetZ: 0, sinYaw: 0, cosYaw: 1, sin: 1, cos: 0, eyeX: 0, eyeZ: 0
 };
 function updateCamera() {
   camera.sin = Math.sin(camera.pitch);
   camera.cos = Math.cos(camera.pitch);
   camera.sinYaw = Math.sin(camera.yaw);
   camera.cosYaw = Math.cos(camera.yaw);
-  camera.centerY = camera.h / 2;
   const width = arena.x * 2 + 2, depth = arena.z * 2 + 2;
-  // Fit the starting view, then preserve the zoom at every camera angle.
-  const fit = Math.min((camera.w - 12) / width, (camera.h - 12) / (depth + 1));
-  camera.scale = Math.max(.01, fit) * camera.zoom;
+  // Keep the arena in front of the camera even when panned to an edge at a shallow angle.
+  camera.distance = Math.hypot(width, depth) * 1.12 + 12;
+  camera.eyeX = camera.targetX + camera.distance * camera.cos * camera.sinYaw;
+  camera.eyeZ = camera.targetZ + camera.distance * camera.cos * camera.cosYaw;
+  const nearEdge = 1 - (depth / 2) * Math.cos(defaultPitch) / camera.distance;
+  const fit = Math.min((camera.w - 12) / width, (camera.h - 12) / (depth * Math.sin(defaultPitch) + 1));
+  camera.scale = Math.max(.01, fit * nearEdge) * camera.zoom;
+  camera.focal = camera.scale * camera.distance;
   ui['zoom-out'].disabled = camera.zoom <= .65;
   ui['zoom-in'].disabled = camera.zoom >= maxZoom;
   needsPaint = true;
@@ -2073,17 +2080,16 @@ function turnCamera(dx, dy, zoomFactor = 1, focus = null) {
   updateCamera();
   if (pivot) {
     const shifted = groundPoint(focus.x, focus.y);
-    moveCamera(pivot.x - shifted.x, pivot.z - shifted.z);
+    if (shifted) moveCamera(pivot.x - shifted.x, pivot.z - shifted.z);
   }
 }
 function project(x, y, z) {
   const localX = x - camera.targetX, localZ = z - camera.targetZ;
   const right = localX * camera.cosYaw - localZ * camera.sinYaw;
   const depth = localX * camera.sinYaw + localZ * camera.cosYaw;
-  return {
-    x: camera.w / 2 + right * camera.scale,
-    y: camera.centerY + (depth * camera.sin - y * camera.cos) * camera.scale
-  };
+  const viewDepth = camera.distance - depth * camera.cos - y * camera.sin;
+  const scale = camera.focal / Math.max(.05, viewDepth);
+  return {x: camera.w / 2 + right * scale, y: camera.h / 2 + (depth * camera.sin - y * camera.cos) * scale, scale};
 }
 function groundOffset(right, depth) {
   return {
@@ -2091,18 +2097,31 @@ function groundOffset(right, depth) {
     z: -right * camera.sinYaw + depth * camera.cosYaw
   };
 }
-function groundPoint(x, y) {
-  const offset = groundOffset((x - camera.w / 2) / camera.scale, (y - camera.centerY) / (camera.scale * camera.sin));
+function groundPoint(x, y, height = 0) {
+  const horizontal = (x - camera.w / 2) / camera.focal;
+  const vertical = (y - camera.h / 2) / camera.focal;
+  const slope = camera.sin + vertical * camera.cos;
+  if (slope <= 1e-8) return null;
+  const distance = camera.distance - height * camera.sin;
+  const depth = (vertical * distance + height * camera.cos) / slope;
+  const offset = groundOffset(horizontal * (distance - depth * camera.cos), depth);
   return {x: camera.targetX + offset.x, z: camera.targetZ + offset.z};
 }
 function moveCamera(dx, dz) {
   camera.targetX = clamp(camera.targetX + dx, -arena.x, arena.x);
   camera.targetZ = clamp(camera.targetZ + dz, -arena.z, arena.z);
+  camera.eyeX = camera.targetX + camera.distance * camera.cos * camera.sinYaw;
+  camera.eyeZ = camera.targetZ + camera.distance * camera.cos * camera.cosYaw;
   needsPaint = true;
 }
-function panCamera(dx, dy) {
-  const offset = groundOffset(dx / camera.scale, dy / (camera.scale * camera.sin));
-  moveCamera(-offset.x, -offset.z);
+function panCamera(dx, dy, screen = {x: camera.w / 2, y: camera.h / 2}) {
+  const from = groundPoint(screen.x - dx, screen.y - dy), to = groundPoint(screen.x, screen.y);
+  if (from && to) {
+    moveCamera(from.x - to.x, from.z - to.z);
+  } else {
+    const offset = groundOffset(dx / camera.scale, dy / (camera.scale * camera.sin));
+    moveCamera(-offset.x, -offset.z);
+  }
 }
 function groundRectangle(ctx, x0, z0, x1, z1, y) {
   const corner = project(x0, y, z0);
@@ -2119,7 +2138,7 @@ ui['zoom-out'].addEventListener('click', () => turnCamera(0, 0, 1 / 1.36));
 ui['zoom-in'].addEventListener('click', () => turnCamera(0, 0, 1.36));
 function resetCamera() {
   camera.yaw = camera.targetX = camera.targetZ = 0;
-  camera.pitch = overhead;
+  camera.pitch = defaultPitch;
   camera.zoom = 1;
   updateCamera();
 }
@@ -2132,9 +2151,9 @@ function viewportPoint(x, y) {
   const box = ui.arena.getBoundingClientRect();
   return {x: x - box.left, y: y - box.top};
 }
-function eventGround(event) {
+function eventGround(event, height = 0) {
   const screen = viewportPoint(event.clientX, event.clientY);
-  return groundPoint(screen.x, screen.y);
+  return groundPoint(screen.x, screen.y, height);
 }
 function setAnchor(x, z) {
   deploy.anchor = {x: Math.round(x * 4) / 4, z: Math.round(z * 4) / 4};
@@ -2142,33 +2161,48 @@ function setAnchor(x, z) {
 }
 function selectOrSetAnchor(ground, screen) {
   if (stageEditor.mode === 'edit' && !stageEditor.selected) {
-    const bodyGround = groundPoint(screen.x, screen.y + .40 * camera.cos * camera.scale);
-    const group = deploy.groups.findLast(group => group.units.some(unit =>
-      Math.min(distance2(unit, ground), distance2(unit, bodyGround)) <= (unitTypes[unit.type].radius + .55) ** 2));
-    if (group) {
+    const top = groundPoint(screen.x, screen.y, unitCapHeight);
+    const dx = ground.x - top.x, dz = ground.z - top.z;
+    const length2 = dx * dx + dz * dz;
+    let selected = null, nearest = Infinity;
+    for (const group of deploy.groups) {
+      for (const unit of group.units) {
+        const x = unit.x - top.x, z = unit.z - top.z;
+        const at = length2 > 1e-10 ? clamp((x * dx + z * dz) / length2, 0, 1) : 0;
+        const radius = unitTypes[unit.type].radius + .35;
+        if (at <= nearest && (x - dx * at) ** 2 + (z - dz * at) ** 2 <= radius ** 2) {
+          nearest = at;
+          selected = {group, unit};
+        }
+      }
+    }
+    if (selected) {
+      const {group, unit} = selected;
       stageEditor.selected = group;
       stageEditor.mirror = group.mirror;
       deploy.type = group.type;
       deploy.count = group.count;
       deploy.rows = group.rows;
       const {x, z} = group.anchor;
-      deploy.anchor = {x: group.mirror && bodyGround.x * x < 0 ? -x : x, z};
+      deploy.anchor = {x: group.mirror && unit.x * x < 0 ? -x : x, z};
       updateDeploy();
       return;
     }
   }
   setAnchor(ground.x, ground.z);
 }
-function previewSide(screen, ground) {
+function previewGrip(screen, ground) {
   const {bounds, mirrorBounds} = deploy.preview;
-  if (!bounds) return 0;
-  const contains = (area, {x,z}) => x >= area.left - .5 && x <= area.right + .5
-    && z >= area.front - .5 && z <= area.back + .5;
-  const bodyHeightOnScreen = .48 * camera.cos * camera.scale;
-  const hits = area => contains(area, ground)
-    || contains(area, groundPoint(screen.x, screen.y + bodyHeightOnScreen / 2))
-    || contains(area, groundPoint(screen.x, screen.y + bodyHeightOnScreen));
-  return hits(bounds) ? 1 : mirrorBounds && hits(mirrorBounds) ? -1 : 0;
+  if (!bounds || !ground) return null;
+  const top = groundPoint(screen.x, screen.y, unitCapHeight);
+  const dx = ground.x - top.x, dz = ground.z - top.z;
+  const direct = wallRayInterval(top.x, top.z, dx, dz, 1, bounds, .5);
+  const mirrored = mirrorBounds && wallRayInterval(top.x, top.z, dx, dz, 1, mirrorBounds, .5);
+  if (!direct && !mirrored) return null;
+  const reflected = mirrored && (!direct || mirrored.entry < direct.entry);
+  const at = (reflected ? mirrored : direct).entry;
+  return {side: reflected ? -1 : 1, height: unitCapHeight * (1 - at),
+    x: top.x + dx * at, z: top.z + dz * at};
 }
 function previewTerrain(from, to) {
   const kind = stageEditor.terrainMode;
@@ -2215,7 +2249,7 @@ function finishTerrain(event, point) {
   const ground = groundPoint(screen.x, screen.y);
   const kind = stageEditor.terrainMode;
   if (point.dragged) {
-    previewTerrain(point.ground, ground);
+    previewTerrain(point.ground, ground ?? point.terrainEnd ?? point.ground);
     const {rectangles, error} = stageEditor.terrainPreview;
     stageEditor.terrainPreview = null;
     if (!error) setStageTerrain(kind, rectangles);
@@ -2224,11 +2258,11 @@ function finishTerrain(event, point) {
     const isWall = kind === 'walls';
     const regions = terrainRegions(arena[kind], isWall);
     if (isWall) {
-      const top = groundPoint(screen.x, screen.y + wallHeight * camera.cos * camera.scale);
-      stageEditor.selectedTerrain = wallRegionOnRay(regions, top, ground);
+      const top = groundPoint(screen.x, screen.y, wallHeight);
+      stageEditor.selectedTerrain = top && ground ? wallRegionOnRay(regions, top, ground) : null;
     } else {
-      stageEditor.selectedTerrain = regions.findLast(region => region.parts.some(rectangle =>
-        insideTerrain(ground, rectangle, .08))) ?? null;
+      stageEditor.selectedTerrain = ground && (regions.findLast(region => region.parts.some(rectangle =>
+        insideTerrain(ground, rectangle, .08))) ?? null);
     }
     updateDeploy();
   }
@@ -2237,14 +2271,15 @@ ui.arena.addEventListener('pointerdown', event => {
   if (![0, 1, 2].includes(event.button) || pointers.size >= 2) return;
   const screen = viewportPoint(event.clientX, event.clientY);
   const ground = groundPoint(screen.x, screen.y);
-  const canPlace = state.phase === 'deploy' && event.button === 0 && !event.shiftKey && onMap(ground);
+  const placeButton = state.phase === 'deploy' && event.button === 0 && !event.shiftKey;
+  const canPlace = placeButton && onMap(ground);
   const pan = event.button === 1 || event.shiftKey;
   const terrain = canPlace && stageEditor.terrainMode;
-  const side = canPlace && !terrain ? previewSide(screen, ground) : 0;
-  const grabbed = side ? deploy.anchor : null;
+  const grip = placeButton && !stageEditor.terrainMode ? previewGrip(screen, ground) : null;
+  const grabbed = grip ? deploy.anchor : null;
   const point = {
     x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY,
-    canPlace, terrain, pan, grabbed, side, ground, dragged: false
+    canPlace, terrain, pan, grabbed, grip, ground, dragged: false
   };
   const first = pointers.values().next().value;
   pointers.set(event.pointerId, point);
@@ -2262,7 +2297,7 @@ ui.arena.addEventListener('pointerdown', event => {
     touchView = {
       distance: Math.max(12, Math.hypot(point.x - first.x, point.y - first.y)),
       zoom: camera.zoom,
-      pivot: groundPoint(center.x, center.y)
+      pivot: groundPoint(center.x, center.y), center
     };
   }
   ui.arena.setPointerCapture(event.pointerId);
@@ -2278,17 +2313,24 @@ ui.arena.addEventListener('pointermove', event => {
     camera.zoom = clamp(touchView.zoom * distance / touchView.distance, .65, maxZoom);
     updateCamera();
     const ground = groundPoint(center.x, center.y);
-    moveCamera(touchView.pivot.x - ground.x, touchView.pivot.z - ground.z);
+    if (touchView.pivot && ground) moveCamera(touchView.pivot.x - ground.x, touchView.pivot.z - ground.z);
+    else panCamera(center.x - touchView.center.x, center.y - touchView.center.y, center);
+    touchView.center = center;
   } else if (!multiTouch && (point.dragged || Math.hypot(x - point.startX, y - point.startY) >= 6)) {
     const dx = x - (point.dragged ? point.x : point.startX);
     const dy = y - (point.dragged ? point.y : point.startY);
     point.dragged = true;
     if (point.terrain && point.terrain === stageEditor.terrainMode) {
-      previewTerrain(point.ground, eventGround(event));
-    } else if (point.grabbed && state.phase === 'deploy') {
       const ground = eventGround(event);
-      setAnchor(point.grabbed.x + point.side * (ground.x - point.ground.x), point.grabbed.z + ground.z - point.ground.z);
-    } else if (point.pan) panCamera(dx, dy);
+      if (ground) {
+        point.terrainEnd = ground;
+        previewTerrain(point.ground, ground);
+      }
+    } else if (point.grabbed && state.phase === 'deploy') {
+      const {grip, grabbed} = point;
+      const position = eventGround(event, grip.height);
+      if (position) setAnchor(grabbed.x + grip.side * (position.x - grip.x), grabbed.z + position.z - grip.z);
+    } else if (point.pan) panCamera(dx, dy, viewportPoint(x, y));
     else turnCamera(dx, dy);
   }
   point.x = x;
@@ -2363,21 +2405,12 @@ document.addEventListener('fullscreenchange', () => {
 });
 
 function syncThreeCamera(view) {
-  const distance = 120;
-  view.position.set(
-    camera.targetX + distance * camera.cos * camera.sinYaw,
-    distance * camera.sin,
-    camera.targetZ + distance * camera.cos * camera.cosYaw
-  );
+  view.position.set(camera.eyeX, camera.distance * camera.sin, camera.eyeZ);
   view.up.set(-camera.sinYaw * camera.sin, camera.cos, -camera.cosYaw * camera.sin);
   view.lookAt(camera.targetX, 0, camera.targetZ);
-  const halfWidth = camera.w / (2 * camera.scale);
-  const halfHeight = camera.h / (2 * camera.scale);
-  const yOffset = (camera.centerY - camera.h / 2) / camera.scale;
-  view.left = -halfWidth;
-  view.right = halfWidth;
-  view.top = halfHeight + yOffset;
-  view.bottom = -halfHeight + yOffset;
+  view.aspect = camera.w / camera.h;
+  view.fov = 2 * Math.atan(camera.h / (2 * camera.focal)) * 180 / Math.PI;
+  view.far = 4 * camera.distance;
   view.updateProjectionMatrix();
 }
 
@@ -2414,7 +2447,7 @@ function createThreeScene(three, context) {
   const renderer = new three.WebGLRenderer({canvas: context.canvas, context, alpha: true, antialias: true});
   renderer.setClearColor(0x000000, 0);
   const scene = new three.Scene();
-  const view = new three.OrthographicCamera(-1, 1, 1, -1, .1, 260);
+  const view = new three.PerspectiveCamera(40, 1, .05, 500);
   scene.add(new three.AmbientLight(0xffffff, .9));
   const sunlight = new three.DirectionalLight(0xffffff, 1.15);
   sunlight.position.set(-.46, .82, -.34);
@@ -2579,7 +2612,7 @@ function createCanvasScene(ctx) {
       ctx.beginPath();
       for (const {edges} of regions) {
         for (const [x0,z0,x1,z1] of edges) {
-          const facing = (z1 - z0) * camera.sinYaw - (x1 - x0) * camera.cosYaw;
+          const facing = (z1 - z0) * (camera.eyeX - x0) - (x1 - x0) * (camera.eyeZ - z0);
           if (facing <= 0) continue;
           polygonPath(ctx, [project(x0,0,z0), project(x0,wallHeight,z0), project(x1,wallHeight,z1), project(x1,0,z1)]);
         }
@@ -2596,9 +2629,6 @@ function createCanvasScene(ctx) {
       ctx.fill();
     },
     draw(shape, x, y, z, sx, sy, sz, color, lit = 0, heading = 0) {
-      const base = project(x,y,z);
-      const rx = sx * camera.scale;
-      const rz = sz * camera.scale * camera.sin;
       if (shape === 'plane') {
         ctx.fillStyle = rgba(color);
         groundRectangle(ctx, x - sx / 2, z - sz / 2, x + sx / 2, z + sz / 2, y);
@@ -2623,7 +2653,8 @@ function createCanvasScene(ctx) {
           for (let i = 0; i < corners.length; i++) {
             const j = (i + 1) % corners.length;
             const a = corners[i], b = corners[j];
-            const facing = (a.x + b.x - 2 * x) * camera.sinYaw + (a.z + b.z - 2 * z) * camera.cosYaw;
+            const facing = (a.x + b.x - 2 * x) * (camera.eyeX - (a.x + b.x) / 2)
+              + (a.z + b.z - 2 * z) * (camera.eyeZ - (a.z + b.z) / 2);
             if (facing > 0) fillPolygon(ctx, [tops[i], tops[j], project(b.x,y,b.z), project(a.x,y,a.z)]);
           }
         }
@@ -2632,14 +2663,16 @@ function createCanvasScene(ctx) {
         return;
       }
       const top = project(x,y+sy,z);
+      const rx = sx * top.scale, rz = sz * top.scale * camera.sin;
       if (shape === 'body') {
+        const base = project(x,y,z);
         const shade = ctx.createLinearGradient(top.x - rx, 0, top.x + rx, 0);
         shade.addColorStop(0, rgba(color, .85));
         shade.addColorStop(1, rgba(color, .65));
         ctx.fillStyle = shade;
         ctx.beginPath();
         ctx.ellipse(top.x, top.y, rx, rz, 0, Math.PI, 0, true);
-        ctx.ellipse(base.x, base.y, rx, rz, 0, 0, Math.PI);
+        ctx.ellipse(base.x, base.y, sx * base.scale, sz * base.scale * camera.sin, 0, 0, Math.PI);
         ctx.closePath();
         ctx.fill();
       }
@@ -2727,7 +2760,7 @@ function createRenderer(scene) {
     const swing = Math.sin((model.swing || 0) / .16 * Math.PI) * .17;
     const x = model.x + (model.aimX || 0) * swing;
     const z = model.z + (model.aimZ || 0) * swing;
-    const height = (.40 + swing * .35) * life;
+    const height = (unitBodyHeight + swing * .35) * life;
     if (ghost) {
       const tone = allowed ? color.ghost : [1,.77,.38];
       draw(body,x,.025,z,halfWidth,height,halfLength,[...tone,.26],1,heading);
@@ -2768,25 +2801,46 @@ function createRenderer(scene) {
 }
 
 function polygonMark(ctx, model, y, radius, sides, widthRatio = 1) {
-  const point = project(model.x, y, model.z);
-  const heading = (model.heading ?? (model.team === 0 ? Math.PI : 0)) - camera.yaw;
-  const angle = Math.atan2(camera.sin * Math.cos(heading), Math.sin(heading));
-  const cos = Math.cos(angle), sin = Math.sin(angle);
+  const worldRadius = radius / project(model.x, y, model.z).scale;
+  const heading = facingOf(model);
+  const cos = Math.cos(heading), sin = Math.sin(heading);
   const outline = customCorners[model.type];
   const firstCorner = (unitTypes[model.type]?.shape ?? model.type) === 'square' ? Math.PI / 4 : 0;
   fillPolygon(ctx, Array.from({length: sides}, (_, i) => {
     const vertex = firstCorner + i * 2 * Math.PI / sides;
-    const forward = radius * (outline?.[i][1] ?? Math.cos(vertex));
-    const side = radius * widthRatio * (outline?.[i][0] ?? Math.sin(vertex));
-    return {x: point.x + forward * cos - side * sin, y: point.y + forward * sin + side * cos};
+    const forward = worldRadius * (outline?.[i][1] ?? Math.cos(vertex));
+    const side = worldRadius * widthRatio * (outline?.[i][0] ?? Math.sin(vertex));
+    return project(model.x + side * cos + forward * sin, y, model.z - side * sin + forward * cos);
   }));
+}
+const ringDirections = Array.from({length: 48}, (_, index) => {
+  const angle = index * 2 * Math.PI / 48;
+  return [Math.cos(angle), Math.sin(angle)];
+});
+function traceGroundRing(ctx, x, y, z, radius) {
+  ctx.beginPath();
+  for (let i = 0; i < ringDirections.length; i++) {
+    const [dx, dz] = ringDirections[i];
+    const point = project(x + dx * radius, y, z + dz * radius);
+    if (i === 0) ctx.moveTo(point.x, point.y);
+    else ctx.lineTo(point.x, point.y);
+  }
+  ctx.closePath();
+}
+function groundEffectVisible(x, y, z, radius) {
+  const corners = [
+    project(x - radius, y, z - radius), project(x + radius, y, z - radius),
+    project(x - radius, y, z + radius), project(x + radius, y, z + radius)
+  ];
+  return !corners.every(point => point.x < -5) && !corners.every(point => point.x > camera.w + 5)
+    && !corners.every(point => point.y < -5) && !corners.every(point => point.y > camera.h + 5);
 }
 
 function drawShellTrail(ctx, shot) {
   const {origin, impact, heightAt, lengths, traveled, segment} = shot.arc;
   if (traveled <= 0) return;
   const head = project(shot.x, shot.y, shot.z);
-  const margin = shellTrailLength * camera.scale + 5;
+  const margin = shellTrailLength * head.scale + 5;
   if (head.x < -margin || head.x > camera.w + margin || head.y < -margin || head.y > camera.h + margin) return;
   const tailDistance = Math.max(0, traveled - shellTrailLength);
   let tailSegment = segment;
@@ -2797,7 +2851,7 @@ function drawShellTrail(ctx, shot) {
   const tail = project(lerp(origin.x, impact.x, tailT), heightAt(tailT), lerp(origin.z, impact.z, tailT));
   const glint = project(lerp(origin.x, impact.x, glintT), heightAt(glintT), lerp(origin.z, impact.z, glintT));
   const pulse = .5 + .5 * Math.sin(traveled * 8.5 + shot.heading * 2);
-  const width = clamp(camera.scale * .23, 1.2, 3.1);
+  const width = clamp(head.scale * .23, 1.2, 3.1);
   ctx.strokeStyle = shot.team === 0 ? '#69f3ce' : '#ff9c69';
   ctx.globalAlpha = .23 + pulse * .24;
   ctx.lineWidth = width * 1.9;
@@ -2816,10 +2870,9 @@ function drawShellTrail(ctx, shot) {
   ctx.globalAlpha = 1;
 }
 function drawShellImpact(ctx, impact) {
-  const point = project(impact.x, .05, impact.z);
-  const radius = impact.radius * camera.scale;
-  if (point.x < -radius || point.x > camera.w + radius || point.y < -radius || point.y > camera.h + radius) return;
-  const depth = radius * camera.sin;
+  const {x, z, radius} = impact;
+  if (!groundEffectVisible(x, .05, z, radius)) return;
+  const screenRadius = radius * project(x, .05, z).scale;
   const life = impact.remaining / impactDuration;
   const spread = 1 - life ** 3;
   const wave = lerp(.14, 1, spread);
@@ -2829,11 +2882,9 @@ function drawShellImpact(ctx, impact) {
   ctx.strokeStyle = color;
   ctx.globalAlpha = life * .34;
   ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.ellipse(point.x, point.y, radius, depth, 0, 0, 2 * Math.PI);
+  traceGroundRing(ctx, x, .05, z, radius);
   ctx.stroke();
-  ctx.beginPath();
-  ctx.ellipse(point.x, point.y, radius * wave, depth * wave, 0, 0, 2 * Math.PI);
+  traceGroundRing(ctx, x, .05, z, radius * wave);
   ctx.fillStyle = color;
   ctx.globalAlpha = life * .22;
   ctx.fill();
@@ -2842,12 +2893,11 @@ function drawShellImpact(ctx, impact) {
   ctx.stroke();
 
   const flash = Math.max(0, (life - .46) / .54);
-  if (flash > 0 && radius >= 4) {
+  if (flash > 0 && screenRadius >= 4) {
     const core = lerp(.58, .22, flash);
     ctx.fillStyle = '#fff5d5';
     ctx.globalAlpha = flash * .82;
-    ctx.beginPath();
-    ctx.ellipse(point.x, point.y, radius * core, depth * core, 0, 0, 2 * Math.PI);
+    traceGroundRing(ctx, x, .05, z, radius * core);
     ctx.fill();
     ctx.strokeStyle = '#fff5d5';
     ctx.globalAlpha = flash * .86;
@@ -2855,10 +2905,12 @@ function drawShellImpact(ctx, impact) {
     ctx.beginPath();
     for (let i = 0; i < 6; i++) {
       const angle = impact.x * .32 + impact.z * .63 + i * Math.PI / 3;
-      const dx = Math.cos(angle) * radius, dy = Math.sin(angle) * depth;
+      const dx = Math.cos(angle) * radius, dz = Math.sin(angle) * radius;
       const end = Math.min(1, wave + .19 + (i % 2) * .11);
-      ctx.moveTo(point.x + dx * wave * .7, point.y + dy * wave * .7);
-      ctx.lineTo(point.x + dx * end, point.y + dy * end);
+      const from = project(x + dx * wave * .7, .05, z + dz * wave * .7);
+      const to = project(x + dx * end, .05, z + dz * end);
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(to.x, to.y);
     }
     ctx.stroke();
   }
@@ -2881,7 +2933,7 @@ function drawHitscanEffect(ctx, impact) {
   const span = Math.hypot(to.x - from.x, to.y - from.y);
   const dx = span > .001 ? (to.x - from.x) / span : 1;
   const dy = span > .001 ? (to.y - from.y) / span : 0;
-  const size = clamp(camera.scale * 1.1, 5, 13);
+  const size = clamp(to.scale * 1.1, 5, 13);
   const accent = impact.team === 0 ? '#69f3ce' : '#ff9c69';
   const trace = Math.max(0, 1 - age / hitscanTraceDuration);
   if (trace && span > .001) {
@@ -2929,7 +2981,7 @@ function drawWallStrike(ctx, impact) {
   const life = 1 - age / .21;
   if (life <= 0) return;
   const point = project(impact.x, impact.y, impact.z);
-  const reach = clamp(camera.scale * .8, 3, 10);
+  const reach = clamp(point.scale * .8, 3, 10);
   ctx.strokeStyle = '#ffe3aa';
   ctx.globalAlpha = life;
   ctx.lineWidth = 1.35;
@@ -2973,20 +3025,18 @@ function drawBeam(ctx, lane, energy, charging = false) {
     band(halfWidth * .26);
     const span = Math.hypot(to.x - from.x, to.y - from.y);
     if (span > .001) {
-      const flash = clamp(camera.scale * halfWidth, 4, 20);
+      const flash = clamp(from.scale * halfWidth, 4, 20);
       drawShotFlash(ctx, from, (to.x - from.x) / span, (to.y - from.y) / span, flash * 1.5, flash);
     }
   }
   ctx.globalAlpha = 1;
 }
 function traceWaveFront(ctx, wave, worldRadius) {
-  const point = project(wave.x, .05, wave.z);
-  const screenRadius = worldRadius * camera.scale;
-  ctx.beginPath();
   if (!arena.walls.length) {
-    ctx.ellipse(point.x, point.y, screenRadius, screenRadius * camera.sin, 0, Math.PI * 2);
+    traceGroundRing(ctx, wave.x, .05, wave.z, worldRadius);
     return;
   }
+  ctx.beginPath();
   if (!wave.front) {
     wave.front = Array.from({length: 96}, (_, i) => {
       const angle = i * Math.PI * 2 / 96, dx = Math.cos(angle), dz = Math.sin(angle);
@@ -3008,10 +3058,7 @@ function traceWaveFront(ctx, wave, worldRadius) {
 }
 function drawPulseWave(ctx, wave) {
   if (!wave.radius) return;
-  const point = project(wave.x, .05, wave.z);
-  const radius = wave.radius * camera.scale;
-  const depth = radius * camera.sin;
-  if (point.x < -radius - 4 || point.x > camera.w + radius + 4 || point.y < -depth - 4 || point.y > camera.h + depth + 4) return;
+  if (!groundEffectVisible(wave.x, .05, wave.z, wave.radius)) return;
   const life = 1 - .72 * (wave.radius / wave.attack.attackRange) ** 2;
   traceWaveFront(ctx, wave, wave.radius);
   ctx.strokeStyle = wave.team === 0 ? '#74f8d2' : '#ff986d';
@@ -3022,9 +3069,9 @@ function drawPulseWave(ctx, wave) {
   ctx.globalAlpha = life * .85;
   ctx.lineWidth = 1.6;
   ctx.stroke();
-  const echo = radius - .7 * camera.scale;
-  if (echo > 1) {
-    traceWaveFront(ctx, wave, wave.radius - .7);
+  const echo = wave.radius - .7;
+  if (echo * project(wave.x, .05, wave.z).scale > 1) {
+    traceWaveFront(ctx, wave, echo);
     ctx.globalAlpha = life * .28;
     ctx.lineWidth = 1;
     ctx.stroke();
@@ -3035,17 +3082,15 @@ const fieldTileOffsets = [[0, 0], [1, 0], [.5, .866], [-.5, .866], [-1, 0], [-.5
 const fieldTileCorners = [[.866, .5], [0, 1], [-.866, .5], [-.866, -.5], [0, -1], [.866, -.5]];
 function drawDamageField(ctx, field) {
   const {x, z, attack} = field;
-  const point = project(x, .04, z);
-  const radius = attack.radius * camera.scale, depth = radius * camera.sin;
-  if (point.x < -radius || point.x > camera.w + radius || point.y < -depth || point.y > camera.h + depth) return;
+  if (!groundEffectVisible(x, .04, z, attack.radius)) return;
+  const radius = attack.radius * project(x, .04, z).scale;
   const untilPulse = field.nextPulse - state.elapsed;
   const remaining = untilPulse + (field.pulsesLeft - 1) * fieldPulseInterval;
   const fade = clamp(remaining * 3, 0, 1);
   const pulse = field.pulsesLeft === attack.pulses ? 0 : clamp((untilPulse - .30) / .20, 0, 1);
   const color = field.team === 0 ? '#7df7ca' : '#ff9a70';
   ctx.fillStyle = ctx.strokeStyle = color;
-  ctx.beginPath();
-  ctx.ellipse(point.x, point.y, radius, depth, 0, 0, Math.PI * 2);
+  traceGroundRing(ctx, x, .04, z, attack.radius);
   ctx.globalAlpha = fade * (.13 + .14 * pulse);
   ctx.fill();
   ctx.globalAlpha = fade * (.50 + .32 * pulse);
@@ -3118,10 +3163,8 @@ function drawMarks(ctx, units, preview, valid, projectiles, walls, wallPreview) 
       drawBeam(ctx, beamLane(unit, spec), energy, charging);
     }
     if (unit.hp > 0 && unit.rootedUntil > state.elapsed) {
-      const point = project(unit.x, .04, unit.z);
-      const radius = Math.max(3, spec.radius * camera.scale);
-      ctx.beginPath();
-      ctx.ellipse(point.x, point.y, radius, radius * camera.sin, 0, Math.PI * 2);
+      const scale = project(unit.x, .04, unit.z).scale;
+      traceGroundRing(ctx, unit.x, .04, unit.z, Math.max(3 / scale, spec.radius));
       ctx.strokeStyle = '#bde8ff';
       ctx.lineWidth = 1.5;
       ctx.globalAlpha = clamp((unit.rootedUntil - state.elapsed) * 2, 0, 1);
@@ -3140,40 +3183,41 @@ function drawMarks(ctx, units, preview, valid, projectiles, walls, wallPreview) 
     fillPolygon(ctx, fan);
   }
   ctx.globalAlpha = 1;
-  if (camera.scale < 4) {
-    const radius = Math.max(1.6, circle.radius * camera.scale);
+  if (camera.scale < 7) {
     for (const [models, isPreview] of [[units, false], [preview, true]]) {
       ctx.globalAlpha = isPreview ? .72 : 1;
       for (const model of models) {
         if (model.hp === 0) continue;
-        const point = project(model.x, .4, model.z);
+        const point = project(model.x, unitCapHeight, model.z);
+        if (point.scale >= 4) continue;
+        const radius = Math.max(1.6, circle.radius * point.scale);
         ctx.fillStyle = isPreview && !valid ? '#f6d393' : model.team === 1 ? '#ffab97' : '#8cebd6';
         const spec = unitTypes[model.type];
-        if (model.type === 'triangle') polygonMark(ctx, model, .4, radius + .35, 3);
-        else if (spec.shape === 'triangle') polygonMark(ctx, model, .4, (radius + .35) * spec.length, 3, spec.width / spec.length);
-        else if (model.type === 'square') polygonMark(ctx, model, .4, radius * Math.SQRT2, 4);
-        else if ((spec.shape ?? model.type) === 'diamond' || spec.burst) polygonMark(ctx, model, .4, radius * spec.length, 4, spec.width / spec.length);
-        else if (model.type === 'trapezoid') polygonMark(ctx, model, .4, radius, 4, trapezoid.width);
+        if (model.type === 'triangle') polygonMark(ctx, model, unitCapHeight, radius + .35, 3);
+        else if (spec.shape === 'triangle') polygonMark(ctx, model, unitCapHeight, (radius + .35) * spec.length, 3, spec.width / spec.length);
+        else if (model.type === 'square') polygonMark(ctx, model, unitCapHeight, radius * Math.SQRT2, 4);
+        else if ((spec.shape ?? model.type) === 'diamond' || spec.burst) polygonMark(ctx, model, unitCapHeight, radius * spec.length, 4, spec.width / spec.length);
+        else if (model.type === 'trapezoid') polygonMark(ctx, model, unitCapHeight, radius, 4, trapezoid.width);
         else if ((spec.shape ?? model.type) === 'hexagon') {
           const markRadius = radius * spec.radius / circle.radius;
-          polygonMark(ctx, model, .4, markRadius, 6);
+          polygonMark(ctx, model, unitCapHeight, markRadius, 6);
           if (spec.field) {
             ctx.fillStyle = '#152b2a';
-            polygonMark(ctx, model, .4, markRadius * .44, 6);
+            polygonMark(ctx, model, unitCapHeight, markRadius * .44, 6);
           }
         }
         else if ((spec.shape ?? model.type) === 'pentagon') {
           const markRadius = radius * spec.radius / circle.radius;
-          polygonMark(ctx, model, .4, markRadius, 5);
+          polygonMark(ctx, model, unitCapHeight, markRadius, 5);
           if (spec.beam) {
             ctx.fillStyle = '#152b2a';
-            polygonMark(ctx, model, .4, markRadius * .54, 5, .48);
+            polygonMark(ctx, model, unitCapHeight, markRadius * .54, 5, .48);
           }
         }
-        else if (model.type === 'octagon') polygonMark(ctx, model, .4, radius * octagon.radius / circle.radius, 8);
+        else if (model.type === 'octagon') polygonMark(ctx, model, unitCapHeight, radius * octagon.radius / circle.radius, 8);
         else if (unitTypes[model.type].box) {
           const {width, length} = unitTypes[model.type];
-          polygonMark(ctx, model, .4, radius * length * Math.SQRT2, 4, width / length);
+          polygonMark(ctx, model, unitCapHeight, radius * length * Math.SQRT2, 4, width / length);
         }
         else {
           ctx.beginPath();
@@ -3187,9 +3231,10 @@ function drawMarks(ctx, units, preview, valid, projectiles, walls, wallPreview) 
   ctx.lineCap = 'round';
   for (const shot of projectiles) {
     if (shot.arc) drawShellTrail(ctx, shot);
-    if ((shot.arc ? shellRadius : projectileRadius) * camera.scale >= 1.35) continue;
+    const height = shot.arc ? shot.y : .40;
+    if ((shot.arc ? shellRadius : projectileRadius) * project(shot.x, height, shot.z).scale >= 1.35) continue;
     ctx.fillStyle = shot.team === 0 ? '#abffed' : '#ffd1bf';
-    polygonMark(ctx, shot, shot.arc ? shot.y : .40, 1.35, shot.arc ? 6 : 3);
+    polygonMark(ctx, shot, height, 1.35, shot.arc ? 6 : 3);
   }
   ctx.lineCap = 'butt';
   if (state.phase === 'deploy') {
