@@ -1895,7 +1895,7 @@ function fireChain(first, impact, ray, spec, enemyBlocks, damage) {
     const next = [];
     for (const source of sources) {
       const beamOrigin = hop === 0 ? impact : source;
-      const targets = chainTargets(source, beamOrigin, ray, enemyBlocks, hit, range2, hop === 0 ? branches : 1);
+      const targets = chainTargets(source, beamOrigin, ray, enemyBlocks, hit, range2, branches);
       for (const {target} of targets) {
         hit.add(target);
         next.push(target);
