@@ -208,7 +208,7 @@ button:disabled { opacity: .37; cursor: default; }
         <button class="btn" id="unit-fieldHexagon" type="button" aria-label="장판형 육각형" title="장판형 육각형" aria-pressed="false"><span aria-hidden="true">⬡</span> 장판</button>
         <button class="btn" id="unit-pentagon" type="button" aria-pressed="false"><span aria-hidden="true">⬟</span> 오각형</button>
         <button class="btn" id="unit-beamPentagon" type="button" aria-label="직사 레이저형 오각형" title="직사 레이저형 오각형" aria-pressed="false"><svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M6 0 12 4.4 9.7 11.5H2.3L0 4.4zM5 4v5h2V4z" fill-rule="evenodd"/></svg> 직사</button>
-        <button class="btn" id="unit-chainPentagon" type="button" aria-label="연쇄 오각형" title="연쇄 오각형" aria-pressed="false"><span aria-hidden="true">↯</span> 연쇄</button>
+        <button class="btn" id="unit-chainPentagon" type="button" aria-label="연쇄 오각형" title="연쇄 오각형" aria-pressed="false"><svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 11V6M6 6 1.5 1.5M6 6l4.5-4.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg> 연쇄</button>
         <button class="btn" id="unit-octagon" type="button" aria-pressed="false"><svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M4 0h4l4 4v4l-4 4H4L0 8V4z"/></svg> 팔각형</button>
         <button class="btn" id="unit-wall" type="button" aria-label="방벽 직사각형" title="방벽 직사각형" aria-pressed="false"><span aria-hidden="true">▬</span> 방벽</button>
       </div>
@@ -322,8 +322,13 @@ const pentagon = Object.freeze({ ...pentagonChassis, damage: 380, attackGap: 3.5
 const beamPentagon = Object.freeze({ ...pentagonChassis, shape: 'pentagon', damage: 195, defense: .45, penetration: .55, attackGap: 6.5,
   beam: Object.freeze({ width: 1.25, chargeTime: .6, duration: 1.75, edgeDamage: 85, pulseInterval: .25, pulseDamage: 18 }) });
 const chainPentagon = Object.freeze({ ...pentagonChassis, shape: 'pentagon', hp: 430, damage: 225,
-  defense: .50, penetration: 1, moveSpeed: 1.5, attackRange: 7.5, attackGap: 6,
-  chain: Object.freeze({ range: 4, branches: 2, damageRetention: .50, penetration: Object.freeze([.35, .10, .03, 0]) }) });
+  defense: .50, penetration: 1, moveSpeed: 1.5, attackRange: 7.5, attackGap: 3.25,
+  chain: Object.freeze({ range: 4, branches: 2, hops: Object.freeze([
+    Object.freeze({retention: .50, penetration: .35}),
+    Object.freeze({retention: .55, penetration: .10}),
+    Object.freeze({retention: .60, penetration: .03}),
+    Object.freeze({retention: .65, penetration: 0})
+  ]) }) });
 const octagon = Object.freeze({ large: true, hp: 1000, damage: 25, defense: .80, penetration: 1,
   radius: 2.75 / 2, moveSpeed: .75, attackGap: 5, attackRange: 32, approachRange: 0,
   waveSpeed: 3.85, edgeDamage: 5, holdsGround: true });
@@ -1857,7 +1862,7 @@ function advanceProjectiles(living, damage, search) {
   });
 }
 
-function chainTargets(origin, direction, enemyBlocks, hit, range2, count) {
+function chainTargets(origin, beamOrigin, direction, enemyBlocks, hit, range2, count) {
   const nearest = [];
   for (const block of enemyBlocks) {
     if (blockDistance2(origin, block) > range2) continue;
@@ -1867,7 +1872,7 @@ function chainTargets(origin, direction, enemyBlocks, hit, range2, count) {
       if (dx * direction.dx + dz * direction.dz <= 1e-8) continue;
       const distance2 = dx * dx + dz * dz;
       const worst = nearest.length === count ? nearest.at(-1).distance2 : Infinity;
-      if (distance2 > range2 || distance2 >= worst || !clearWallLine(origin, target)) continue;
+      if (distance2 > range2 || distance2 >= worst || !clearWallLine(beamOrigin, target)) continue;
       const index = nearest.findIndex(candidate => candidate.distance2 > distance2);
       nearest.splice(index === -1 ? nearest.length : index, 0, {target, distance2});
       if (nearest.length > count) nearest.pop();
@@ -1876,29 +1881,31 @@ function chainTargets(origin, direction, enemyBlocks, hit, range2, count) {
   return nearest;
 }
 
-function fireChain(first, ray, spec, enemyBlocks, damage) {
-  const {range, branches, damageRetention, penetration} = spec.chain;
+function fireChain(first, impact, ray, spec, enemyBlocks, damage) {
+  const {range, branches, hops} = spec.chain;
   const hit = new Set([first]);
-  const arcs = [];
+  const beamBranches = [];
   const range2 = range ** 2;
   let sources = [first];
   let amount = spec.damage;
-  for (let hop = 0; hop < penetration.length && sources.length; hop++) {
-    amount *= damageRetention;
-    const attack = {damage: amount, penetration: penetration[hop]};
+  for (const [hop, {retention, penetration}] of hops.entries()) {
+    if (!sources.length) break;
+    amount *= retention;
+    const attack = {damage: amount, penetration};
     const next = [];
     for (const source of sources) {
-      const targets = chainTargets(source, ray, enemyBlocks, hit, range2, hop === 0 ? branches : 1);
+      const beamOrigin = hop === 0 ? impact : source;
+      const targets = chainTargets(source, beamOrigin, ray, enemyBlocks, hit, range2, hop === 0 ? branches : 1);
       for (const {target} of targets) {
         hit.add(target);
         next.push(target);
         damage[target.id] += damageAgainst(attack, target);
-        arcs.push({fromX: source.x, fromZ: source.z, toX: target.x, toZ: target.z, hop});
+        beamBranches.push({fromX: beamOrigin.x, fromZ: beamOrigin.z, toX: target.x, toZ: target.z, hop});
       }
     }
     sources = next;
   }
-  return arcs;
+  return beamBranches;
 }
 
 function fireHitscan(unit, aim, spec, living, damage, search = buildUnitSearch(living)) {
@@ -1916,16 +1923,20 @@ function fireHitscan(unit, aim, spec, living, damage, search = buildUnitSearch(l
   const muzzle = Math.min(spec.radius * .84, distance);
   const trace = {x: ray.x + ray.dx * muzzle, z: ray.z + ray.dz * muzzle};
   const impact = {x: ray.x + ray.dx * distance, z: ray.z + ray.dz * distance};
+  if (spec.chain) {
+    let beamBranches = [];
+    if (hit) {
+      damage[hit.target.id] += damageAgainst(spec, hit.target);
+      beamBranches = fireChain(hit.target, impact, ray, spec, search[1 - unit.team], damage);
+    }
+    state.impacts.push({...impact, team: unit.team, remaining: impactDuration, trace, beamBranches});
+    return;
+  }
   if (!hit) {
     addWallStrike(impact.x, .36, impact.z, unit.team, trace);
     return;
   }
   damage[hit.target.id] += damageAgainst(spec, hit.target);
-  if (spec.chain) {
-    const arcs = fireChain(hit.target, ray, spec, search[1 - unit.team], damage);
-    state.impacts.push({...impact, team: unit.team, remaining: impactDuration, trace, arcs});
-    return;
-  }
   const radius = spec.splashRadius;
   const radius2 = radius ** 2;
   const splash = {damage: spec.splashDamage, penetration: 0};
@@ -3207,34 +3218,44 @@ function drawHitscanEffect(ctx, impact) {
   ctx.stroke();
   ctx.globalAlpha = 1;
 }
-function drawChainArcs(ctx, impact) {
+function drawSplitBeam(ctx, impact) {
   const age = impactDuration - impact.remaining;
-  const color = impact.team === 0 ? '#84b7ff' : '#ff94d1';
-  for (const [index, arc] of impact.arcs.entries()) {
-    const delay = .035 * (arc.hop + 1);
-    const life = clamp(1 - (age - delay) / .26, 0, 1);
-    if (age < delay || !life) continue;
-    const from = arc.hop === 0 ? project(impact.x, .36, impact.z) : project(arc.fromX, .48, arc.fromZ);
-    const to = project(arc.toX, .48, arc.toZ);
-    const dx = to.x - from.x, dy = to.y - from.y;
-    const bend = (index % 2 ? -1 : 1) * .13 * life;
-    const strength = 1 - arc.hop * .16;
+  const fade = clamp((.36 - age) / .18, 0, 1);
+  if (!fade) return;
+  const color = impact.team === 0 ? '#78dbff' : '#ff99ca';
+  const height = .48;
+  const travel = .032;
+  function drawSegment(from, to, progress, width) {
+    if (progress <= 0) return;
     ctx.beginPath();
     ctx.moveTo(from.x, from.y);
-    ctx.lineTo(from.x + .28 * dx - bend * dy, from.y + .28 * dy + bend * dx);
-    ctx.lineTo(from.x + .61 * dx + bend * dy, from.y + .61 * dy - bend * dx);
-    ctx.lineTo(to.x, to.y);
+    ctx.lineTo(lerp(from.x, to.x, progress), lerp(from.y, to.y, progress));
     ctx.strokeStyle = color;
-    ctx.globalAlpha = life * .72 * strength;
-    ctx.lineWidth = 1 + 4 * strength;
+    ctx.globalAlpha = fade * .42;
+    ctx.lineWidth = width * 2.6;
     ctx.stroke();
-    ctx.strokeStyle = '#fff8ff';
-    ctx.globalAlpha = life * strength;
-    ctx.lineWidth = 1 + strength;
+    ctx.strokeStyle = '#fff8fb';
+    ctx.globalAlpha = fade * .98;
+    ctx.lineWidth = width;
     ctx.stroke();
-    ctx.fillStyle = '#fff8ff';
+  }
+  const junction = project(impact.x, height, impact.z);
+  const muzzle = project(impact.trace.x, height, impact.trace.z);
+  const width = clamp(junction.scale * .19, 1.8, 6);
+  drawSegment(muzzle, junction, clamp(age / travel, .18, 1), width);
+  for (const {fromX, fromZ, toX, toZ, hop} of impact.beamBranches) {
+    const progress = clamp(age / travel - hop - 1, 0, 1);
+    if (!progress) continue;
+    const from = project(fromX, height, fromZ);
+    const to = project(toX, height, toZ);
+    drawSegment(from, to, progress, Math.max(.85, width * (.68 - .10 * hop)));
+  }
+  if (age >= travel) {
+    const flash = clamp(1 - (age - travel) / .16, 0, 1);
+    ctx.fillStyle = color;
+    ctx.globalAlpha = flash * .84;
     ctx.beginPath();
-    ctx.arc(to.x, to.y, 1 + 2.4 * strength * life, 0, Math.PI * 2);
+    ctx.arc(junction.x, junction.y, width * (1 + flash), 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
@@ -3411,10 +3432,13 @@ function drawMarks(ctx, units, preview, valid, projectiles, walls, wallPreview) 
   for (const field of state.fields) drawDamageField(ctx, field);
   for (const wave of state.waves) drawPulseWave(ctx, wave);
   for (const impact of state.impacts) {
+    if (impact.beamBranches) {
+      drawSplitBeam(ctx, impact);
+      continue;
+    }
     if (impact.radius) drawShellImpact(ctx, impact);
     else if (!impact.trace) drawWallStrike(ctx, impact);
     if (impact.trace) drawHitscanEffect(ctx, impact);
-    if (impact.arcs) drawChainArcs(ctx, impact);
   }
   for (const unit of units) {
     const spec = unitTypes[unit.type];
