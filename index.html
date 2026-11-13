@@ -323,7 +323,7 @@ const beamPentagon = Object.freeze({ ...pentagonChassis, shape: 'pentagon', dama
   beam: Object.freeze({ width: 1.25, chargeTime: .6, duration: 1.75, edgeDamage: 85, pulseInterval: .25, pulseDamage: 18 }) });
 const chainPentagon = Object.freeze({ ...pentagonChassis, shape: 'pentagon', hp: 430, damage: 225,
   defense: .50, penetration: 1, moveSpeed: 1.5, attackRange: 7.5, attackGap: 6,
-  chain: Object.freeze({ range: 4, branches: 2, damageRetention: .45, penetration: Object.freeze([.35, .10, .03, 0]) }) });
+  chain: Object.freeze({ range: 4, branches: 2, damageRetention: .50, penetration: Object.freeze([.35, .10, .03, 0]) }) });
 const octagon = Object.freeze({ large: true, hp: 1000, damage: 25, defense: .80, penetration: 1,
   radius: 2.75 / 2, moveSpeed: .75, attackGap: 5, attackRange: 32, approachRange: 0,
   waveSpeed: 3.85, edgeDamage: 5, holdsGround: true });
