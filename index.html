@@ -208,6 +208,7 @@ button:disabled { opacity: .37; cursor: default; }
         <button class="btn" id="unit-fieldHexagon" type="button" aria-label="장판형 육각형" title="장판형 육각형" aria-pressed="false"><span aria-hidden="true">⬡</span> 장판</button>
         <button class="btn" id="unit-pentagon" type="button" aria-pressed="false"><span aria-hidden="true">⬟</span> 오각형</button>
         <button class="btn" id="unit-beamPentagon" type="button" aria-label="직사 레이저형 오각형" title="직사 레이저형 오각형" aria-pressed="false"><svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M6 0 12 4.4 9.7 11.5H2.3L0 4.4zM5 4v5h2V4z" fill-rule="evenodd"/></svg> 직사</button>
+        <button class="btn" id="unit-chainPentagon" type="button" aria-label="연쇄 오각형" title="연쇄 오각형" aria-pressed="false"><span aria-hidden="true">↯</span> 연쇄</button>
         <button class="btn" id="unit-octagon" type="button" aria-pressed="false"><svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M4 0h4l4 4v4l-4 4H4L0 8V4z"/></svg> 팔각형</button>
         <button class="btn" id="unit-wall" type="button" aria-label="방벽 직사각형" title="방벽 직사각형" aria-pressed="false"><span aria-hidden="true">▬</span> 방벽</button>
       </div>
@@ -273,7 +274,8 @@ const ui = Object.fromEntries([
   'stage-free', 'stage-file', 'stage-mirror', 'stage-cancel-group', 'stage-dialog', 'stage-form',
   'stage-name', 'stage-width', 'stage-depth', 'stage-enemy-percent', 'stage-form-error', 'stage-close-settings',
   'arena', 'marks', 'hint', 'unit-circle', 'unit-triangle', 'unit-square', 'unit-diamond', 'unit-trapezoid', 'unit-hexagon',
-  'unit-pentagon', 'unit-beamPentagon', 'unit-octagon', 'unit-wall', 'unit-piercing', 'unit-spread', 'unit-escort', 'unit-bomber', 'unit-fieldHexagon',
+  'unit-pentagon', 'unit-beamPentagon', 'unit-chainPentagon', 'unit-octagon', 'unit-wall',
+  'unit-piercing', 'unit-spread', 'unit-escort', 'unit-bomber', 'unit-fieldHexagon',
   'count', 'count-down', 'count-up', 'rows', 'rows-down', 'rows-up', 'undo', 'place',
   'start', 'deploy-bar', 'battle-bar', 'back', 'clock', 'result', 'verdict', 'summary', 'error',
   'zoom-out', 'zoom-in', 'view-reset', 'fullscreen', 'screen-notice'
@@ -319,13 +321,17 @@ const pentagonChassis = { large: true, hp: 450, defense: .55, penetration: .65,
 const pentagon = Object.freeze({ ...pentagonChassis, damage: 380, attackGap: 3.5, splashRadius: .8, splashDamage: 55 });
 const beamPentagon = Object.freeze({ ...pentagonChassis, shape: 'pentagon', damage: 195, defense: .45, penetration: .55, attackGap: 6.5,
   beam: Object.freeze({ width: 1.25, chargeTime: .6, duration: 1.75, edgeDamage: 85, pulseInterval: .25, pulseDamage: 18 }) });
+const chainPentagon = Object.freeze({ ...pentagonChassis, shape: 'pentagon', hp: 430, damage: 225,
+  defense: .50, penetration: 1, moveSpeed: 1.5, attackRange: 7.5, attackGap: 6,
+  chain: Object.freeze({ range: 4, branches: 2, damageRetention: .45, penetration: Object.freeze([.35, .10, .03, 0]) }) });
 const octagon = Object.freeze({ large: true, hp: 1000, damage: 25, defense: .80, penetration: 1,
   radius: 2.75 / 2, moveSpeed: .75, attackGap: 5, attackRange: 32, approachRange: 0,
   waveSpeed: 3.85, edgeDamage: 5, holdsGround: true });
 const wall = Object.freeze({ hp: 500, damage: 10, defense: .55, penetration: .05,
   width: 1.65, length: 1, radius: Math.hypot(.825, .5), moveSpeed: 3.06, attackGap: 1,
   attackRange: circle.attackRange, box: true, shape: 'square', rootOnMeleeHit: .5, enemyPushWeight: .25 });
-const unitTypes = Object.freeze({circle, triangle, piercing, spread, square, diamond, escort, bomber, trapezoid, hexagon, fieldHexagon, pentagon, beamPentagon, octagon, wall});
+const unitTypes = Object.freeze({circle, triangle, piercing, spread, square, diamond, escort, bomber, trapezoid,
+  hexagon, fieldHexagon, pentagon, beamPentagon, chainPentagon, octagon, wall});
 const customCorners = {
   trapezoid: [[-.68, 1], [.68, 1], [1, -1], [-1, -1]],
   bomber: [[0, 1], [1, -.35], [0, -1], [-1, -.35]]
@@ -1851,7 +1857,51 @@ function advanceProjectiles(living, damage, search) {
   });
 }
 
-function fireHitscan(unit, aim, spec, living, damage, search) {
+function chainTargets(origin, direction, enemyBlocks, hit, range2, count) {
+  const nearest = [];
+  for (const block of enemyBlocks) {
+    if (blockDistance2(origin, block) > range2) continue;
+    for (const target of block.units) {
+      if (hit.has(target)) continue;
+      const dx = target.x - origin.x, dz = target.z - origin.z;
+      if (dx * direction.dx + dz * direction.dz <= 1e-8) continue;
+      const distance2 = dx * dx + dz * dz;
+      const worst = nearest.length === count ? nearest.at(-1).distance2 : Infinity;
+      if (distance2 > range2 || distance2 >= worst || !clearWallLine(origin, target)) continue;
+      const index = nearest.findIndex(candidate => candidate.distance2 > distance2);
+      nearest.splice(index === -1 ? nearest.length : index, 0, {target, distance2});
+      if (nearest.length > count) nearest.pop();
+    }
+  }
+  return nearest;
+}
+
+function fireChain(first, ray, spec, enemyBlocks, damage) {
+  const {range, branches, damageRetention, penetration} = spec.chain;
+  const hit = new Set([first]);
+  const arcs = [];
+  const range2 = range ** 2;
+  let sources = [first];
+  let amount = spec.damage;
+  for (let hop = 0; hop < penetration.length && sources.length; hop++) {
+    amount *= damageRetention;
+    const attack = {damage: amount, penetration: penetration[hop]};
+    const next = [];
+    for (const source of sources) {
+      const targets = chainTargets(source, ray, enemyBlocks, hit, range2, hop === 0 ? branches : 1);
+      for (const {target} of targets) {
+        hit.add(target);
+        next.push(target);
+        damage[target.id] += damageAgainst(attack, target);
+        arcs.push({fromX: source.x, fromZ: source.z, toX: target.x, toZ: target.z, hop});
+      }
+    }
+    sources = next;
+  }
+  return arcs;
+}
+
+function fireHitscan(unit, aim, spec, living, damage, search = buildUnitSearch(living)) {
   const heading = Math.atan2(aim.x - unit.x, aim.z - unit.z);
   const ray = {x: unit.x, z: unit.z, team: unit.team, dx: Math.sin(heading), dz: Math.cos(heading)};
   const wallDistance = wallHitDistance(ray.x, ray.z, ray.dx, ray.dz, spec.attackRange);
@@ -1871,6 +1921,11 @@ function fireHitscan(unit, aim, spec, living, damage, search) {
     return;
   }
   damage[hit.target.id] += damageAgainst(spec, hit.target);
+  if (spec.chain) {
+    const arcs = fireChain(hit.target, ray, spec, search[1 - unit.team], damage);
+    state.impacts.push({...impact, team: unit.team, remaining: impactDuration, trace, arcs});
+    return;
+  }
   const radius = spec.splashRadius;
   const radius2 = radius ** 2;
   const splash = {damage: spec.splashDamage, penetration: 0};
@@ -2946,6 +3001,13 @@ function createRenderer(scene) {
       draw(capShape,x,capY + unitDetailLift,z,halfWidth * (spec.field ? .30 : .25),0,
         halfLength * (spec.field ? .30 : .57),detailColor,0,heading,-4);
     }
+    if (spec.chain) {
+      const detailColor = ghost ? [...tone,.85] : [...color.rim,life];
+      const offset = halfLength * .23;
+      const dx = Math.cos(heading) * offset, dz = -Math.sin(heading) * offset;
+      draw('diamond-cap',x-dx,capY+unitDetailLift,z-dz,halfWidth*.12,0,halfLength*.31,detailColor,0,heading,-4);
+      draw('diamond-cap',x+dx,capY+unitDetailLift,z+dz,halfWidth*.12,0,halfLength*.31,detailColor,0,heading,-4);
+    }
   }
   return {
     render(units, preview, valid, projectiles, walls) {
@@ -3145,6 +3207,38 @@ function drawHitscanEffect(ctx, impact) {
   ctx.stroke();
   ctx.globalAlpha = 1;
 }
+function drawChainArcs(ctx, impact) {
+  const age = impactDuration - impact.remaining;
+  const color = impact.team === 0 ? '#84b7ff' : '#ff94d1';
+  for (const [index, arc] of impact.arcs.entries()) {
+    const delay = .035 * (arc.hop + 1);
+    const life = clamp(1 - (age - delay) / .26, 0, 1);
+    if (age < delay || !life) continue;
+    const from = arc.hop === 0 ? project(impact.x, .36, impact.z) : project(arc.fromX, .48, arc.fromZ);
+    const to = project(arc.toX, .48, arc.toZ);
+    const dx = to.x - from.x, dy = to.y - from.y;
+    const bend = (index % 2 ? -1 : 1) * .13 * life;
+    const strength = 1 - arc.hop * .16;
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(from.x + .28 * dx - bend * dy, from.y + .28 * dy + bend * dx);
+    ctx.lineTo(from.x + .61 * dx + bend * dy, from.y + .61 * dy - bend * dx);
+    ctx.lineTo(to.x, to.y);
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = life * .72 * strength;
+    ctx.lineWidth = 1 + 4 * strength;
+    ctx.stroke();
+    ctx.strokeStyle = '#fff8ff';
+    ctx.globalAlpha = life * strength;
+    ctx.lineWidth = 1 + strength;
+    ctx.stroke();
+    ctx.fillStyle = '#fff8ff';
+    ctx.beginPath();
+    ctx.arc(to.x, to.y, 1 + 2.4 * strength * life, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
 function drawWallStrike(ctx, impact) {
   const age = impactDuration - impact.remaining;
   const life = 1 - age / .21;
@@ -3320,6 +3414,7 @@ function drawMarks(ctx, units, preview, valid, projectiles, walls, wallPreview) 
     if (impact.radius) drawShellImpact(ctx, impact);
     else if (!impact.trace) drawWallStrike(ctx, impact);
     if (impact.trace) drawHitscanEffect(ctx, impact);
+    if (impact.arcs) drawChainArcs(ctx, impact);
   }
   for (const unit of units) {
     const spec = unitTypes[unit.type];
@@ -3381,6 +3476,11 @@ function drawMarks(ctx, units, preview, valid, projectiles, walls, wallPreview) 
           if (spec.beam) {
             ctx.fillStyle = '#152b2a';
             polygonMark(ctx, model, unitCapHeight, markRadius * .54, 5, .48);
+          } else if (spec.chain) {
+            ctx.fillStyle = '#152b2a';
+            ctx.beginPath();
+            ctx.arc(point.x, point.y, Math.max(.75, markRadius * .32), 0, 2 * Math.PI);
+            ctx.fill();
           }
         }
         else if (model.type === 'octagon') polygonMark(ctx, model, unitCapHeight, radius * octagon.radius / circle.radius, 8);
